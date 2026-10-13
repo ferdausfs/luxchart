@@ -1,0 +1,24 @@
+# Gradle
+.gradle/
+build/
+
+# Android Studio / IntelliJ
+.idea/
+*.iml
+captures/
+local.properties
+
+# Native build output
+.cxx/
+
+# Keystores & secrets — NEVER commit these
+*.jks
+*.keystore
+*keystore*
+*KEYSTORE*
+*SECRETS*
+keystore.properties
+
+# OS junk
+.DS_Store
+Thumbs.db
