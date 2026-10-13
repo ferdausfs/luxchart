@@ -13,9 +13,9 @@ val CI_RUN_NUMBER = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
 val keystoreFile: String? = System.getenv("KEYSTORE_FILE")
 val keystorePassword: String? = System.getenv("KEYSTORE_PASSWORD")
 val keyAliasName: String? = System.getenv("KEY_ALIAS")
-val keyPassword: String? = System.getenv("KEY_PASSWORD")
+val keyPasswordValue: String? = System.getenv("KEY_PASSWORD")
 val haveReleaseSigning =
-    listOf(keystoreFile, keystorePassword, keyAliasName, keyPassword).all { !it.isNullOrBlank() }
+    listOf(keystoreFile, keystorePassword, keyAliasName, keyPasswordValue).all { !it.isNullOrBlank() }
 
 android {
     namespace = "com.ferdausfs.luxchart"
@@ -36,7 +36,7 @@ android {
                 storePassword = keystorePassword
                 storeType = "PKCS12"
                 keyAlias = keyAliasName
-                keyPassword = keyPassword
+                keyPassword = keyPasswordValue
             }
         }
     }
