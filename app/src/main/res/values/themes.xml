@@ -1,5 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Framework theme: no AndroidX dependency needed for this skeleton. -->
-    <style name="Theme.LuxChart" parent="android:Theme.Material.Light.NoActionBar" />
+    <!-- Post-splash theme: dark framework theme, no AppCompat dependency.
+         Bars are transparent everywhere (edge-to-edge is applied in code). -->
+    <style name="Theme.LuxChart" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/lux_bg</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+
+    <!-- Splash theme (androidx core-splashscreen). The icon-background attr
+         requires the Theme.SplashScreen.IconBackground parent variant. -->
+    <style name="Theme.LuxChart.Splash" parent="Theme.SplashScreen.IconBackground">
+        <item name="windowSplashScreenBackground">@color/lux_bg</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_launcher_foreground</item>
+        <item name="windowSplashScreenIconBackgroundColor">@color/ic_launcher_background</item>
+        <item name="postSplashScreenTheme">@style/Theme.LuxChart</item>
+    </style>
 </resources>

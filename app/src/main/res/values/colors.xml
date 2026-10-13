@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- App-wide dark surfaces: matches luxalgo's dark UI so there is no
+         flash between splash, window and WebView content. -->
+    <color name="lux_bg">#FF0A0E14</color>
+    <color name="lux_progress_bg">#FF1E293B</color>
+    <!-- Adaptive icon layers -->
+    <color name="ic_launcher_background">#FF0B1220</color>
+</resources>

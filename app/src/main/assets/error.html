@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>LuxChart — offline</title>
+<style>
+  :root {
+    --bg: #0a0e14; --card: #111826; --line: #1e293b;
+    --text: #e2e8f0; --dim: #94a3b8; --accent: #2dd4bf;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, 'Segoe UI', Roboto, sans-serif;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .card { text-align: center; padding: 36px 28px; max-width: 440px; width: 92%; }
+  .orb {
+    width: 96px; height: 96px; margin: 0 auto 22px; border-radius: 28px;
+    background: linear-gradient(145deg, #0f2d33, #0a0e14);
+    border: 1px solid var(--line);
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 18px 40px rgba(0, 0, 0, .45);
+    animation: float 3.2s ease-in-out infinite;
+  }
+  .orb svg { width: 52px; height: 52px; }
+  h1 { font-size: 20px; font-weight: 600; letter-spacing: .2px; margin-bottom: 10px; }
+  p {
+    font-size: 14px; color: var(--dim); line-height: 1.55;
+    margin-bottom: 26px; min-height: 20px; word-break: break-word;
+  }
+  button {
+    appearance: none; border: 0; cursor: pointer; font: inherit;
+    font-weight: 600; font-size: 15px; color: #04211d;
+    background: linear-gradient(135deg, #2dd4bf, #14b8a6);
+    padding: 13px 34px; border-radius: 14px;
+    box-shadow: 0 10px 24px rgba(20, 184, 166, .28);
+    transition: transform .15s ease, box-shadow .15s ease, filter .15s ease;
+  }
+  button:active { transform: scale(.96); box-shadow: 0 6px 14px rgba(20, 184, 166, .22); }
+  button:hover { filter: brightness(1.06); }
+  @keyframes float { 0%, 100% { transform: translateY(0) } 50% { transform: translateY(-8px) } }
+  @keyframes pulse { 0%, 100% { opacity: .55 } 50% { opacity: 1 } }
+  .dots {
+    margin-top: 26px; font-size: 11px; color: var(--dim);
+    letter-spacing: 1.5px; animation: pulse 2.4s ease-in-out infinite;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .orb { animation: none; }
+    .dots { animation: none; }
+    button { transition: none; }
+  }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="orb" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="#2dd4bf" stroke-width="1.8" stroke-linecap="round">
+        <path d="M12 3v3M12 18v3M3 12h3M18 12h3" />
+        <circle cx="12" cy="12" r="4.5" />
+        <path d="M12 10.2v3.6M10.2 12h3.6" stroke="#e2e8f0" />
+      </svg>
+    </div>
+    <h1>Connection lost</h1>
+    <p id="msg">This page failed to load. Check your connection — LuxChart will retry automatically when the network is back.</p>
+    <button id="retry">Try again</button>
+    <div class="dots">AUTO-RETRY ENABLED</div>
+  </div>
+  <script>
+    (function () {
+      try {
+        var p = new URLSearchParams(location.search);
+        var m = p.get('msg');
+        if (m) {
+          m = m.split('+').join(' ');
+          document.getElementById('msg').textContent = decodeURIComponent(m);
+        }
+      } catch (e) {}
+      document.getElementById('retry').addEventListener('click', function () {
+        if (window.LuxBridge && window.LuxBridge.retry) window.LuxBridge.retry();
+      });
+    })();
+  </script>
+</body>
+</html>

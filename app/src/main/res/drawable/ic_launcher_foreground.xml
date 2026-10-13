@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Adaptive icon foreground: three candlesticks inside the 66dp safe zone
+     (108dp viewport). Also used as the splash icon and the monochrome layer. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- candle 1 (teal, mid) -->
+    <path
+        android:fillColor="#2DD4BF"
+        android:pathData="M38.5,42h3v28h-3z" />
+    <path
+        android:fillColor="#2DD4BF"
+        android:pathData="M34,48h12v16h-12z" />
+
+    <!-- candle 2 (light, tall) -->
+    <path
+        android:fillColor="#F8FAFC"
+        android:pathData="M53.5,34h3v32h-3z" />
+    <path
+        android:fillColor="#F8FAFC"
+        android:pathData="M49,40h12v20h-12z" />
+
+    <!-- candle 3 (deep teal, small) -->
+    <path
+        android:fillColor="#14B8A6"
+        android:pathData="M68.5,40h3v32h-3z" />
+    <path
+        android:fillColor="#14B8A6"
+        android:pathData="M64,46h12v14h-12z" />
+</vector>

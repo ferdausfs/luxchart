@@ -4,7 +4,7 @@ plugins {
 }
 
 // ---- Single source of truth for the user-visible version name ----
-val APP_VERSION_NAME = "1.0.0"
+val APP_VERSION_NAME = "1.1.0"
 
 // CI sets GITHUB_RUN_NUMBER; local builds fall back to 1.
 val CI_RUN_NUMBER = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
@@ -66,6 +66,13 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+}
+
+dependencies {
+    // Kept deliberately minimal (lightweight app):
+    implementation("androidx.core:core-ktx:1.15.0")               // edge-to-edge / insets compat
+    implementation("androidx.activity:activity-ktx:1.9.3")        // OnBackPressedCallback, result APIs
+    implementation("androidx.core:core-splashscreen:1.0.1")       // splash screen (feature 8)
 }
 
 // Fail fast (before any task executes) when a release build is requested but

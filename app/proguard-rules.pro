@@ -15,7 +15,8 @@
     protected *;
 }
 
-# If a JS interface is ever added (future feature), keep annotated members.
+# JavaScript bridge methods are invoked reflectively from JS — never strip.
 -keepclassmembers class * {
     @android.webkit.JavascriptInterface <methods>;
 }
+-keep class com.ferdausfs.luxchart.MainActivity$ErrorPageBridge { *; }
