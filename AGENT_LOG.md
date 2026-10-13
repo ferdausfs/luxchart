@@ -10,6 +10,68 @@ secret values in this file. Secret *names* and file *names* are allowed.
 
 ---
 
+## Session 2 — 2026-10-14 — All 9 pending features + UI polish (BUILD: GREEN)
+
+- **Agent/Tool:** GLM (Super Z CLI) acting as senior Android engineer
+- **Feature:** implemented ALL 9 pending features in one session (owner
+  pre-approved everything, no approval gates) + premium UI polish
+- **What changed:**
+  1. Persistent login: `setAcceptCookie(true)` + `setAcceptThirdPartyCookies`
+     (OAuth) + `CookieManager.flush()` on pause; DOM storage kept on.
+  2. Immersive fullscreen + landscape: edge-to-edge via
+     `WindowCompat.setDecorFitsSystemWindows(false)`, bars hidden with
+     `WindowInsetsControllerCompat` (sticky, transient-by-swipe = smooth
+     enter/exit), `configChanges` in manifest so rotation never reloads;
+     insets listener pads content for bars + keyboard (IME).
+  3. Back button: `OnBackPressedCallback` — `goBack()` when possible, else
+     finish; exits directly from the error page.
+  4. Offline/error page: `assets/error.html` (dark, animated, reduced-motion
+     aware) with Retry (haptic via tiny JS bridge `LuxBridge`), plus
+     ConnectivityManager auto-retry when the network returns; main-frame HTTP
+     >= 400 also handled.
+  5. Pull-to-refresh: none exists (no SwipeRefreshLayout) + overscroll off.
+  6. Chart gesture fix: WebView pinch-zoom fully disabled (zoom controls
+     hidden), long-press text selection suppressed so the chart canvas owns
+     pan/pinch/draw; desktop UA + wide viewport kept; `textZoom = 100`.
+  7. File upload: `onShowFileChooser` via `ActivityResultContracts`; downloads
+     via DownloadManager (public Downloads dir; WRITE_EXTERNAL_STORAGE
+     runtime request only on API < 29, app-private fallback if denied;
+     Cookie + UA headers attached; blob:/data: rejected with toast).
+  8. Splash: androidx core-splashscreen (dark, adaptive icon as art), held
+     until first paint, seamless dark-to-dark handoff (no white flash).
+  9. Adaptive icon: `mipmap-anydpi-v26` with background/foreground/monochrome
+     candlestick vector; legacy PNGs stay for API 24-25.
+  Polish: thin animated teal progress bar (WebChromeClient.onProgressChanged),
+  content fade-in, consistent dark surfaces (window/splash/WebView/bars).
+- **Touched files:** `app/build.gradle.kts` (deps core-ktx 1.15.0,
+  activity-ktx 1.9.3, core-splashscreen 1.0.1; versionName 1.0.0 -> 1.1.0),
+  `app/proguard-rules.pro`, `app/src/main/AndroidManifest.xml` (configChanges,
+  usesCleartextTraffic=false, ACCESS_NETWORK_STATE, WRITE_EXTERNAL_STORAGE
+  maxSdk 28), `app/src/main/java/com/ferdausfs/luxchart/MainActivity.kt`
+  (rewritten), `app/src/main/assets/error.html` (new),
+  `app/src/main/res/values/{colors.xml (new),strings.xml,themes.xml}`,
+  `app/src/main/res/drawable/ic_launcher_foreground.xml` (new),
+  `app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml` (new), `README.md`
+- **Commit hashes:** feature commit `a5017711360587a82c88d3228e162aafdd569921`
+  (run #4 FAILURE — `overScrollMode`/scrollbar flags are View properties, not
+  WebSettings; fixed by moving them out of `settings.apply`) -> fix commit
+  `a77a1bcf47017d43056db5d530d918c6cc11e79d` -> run #5 SUCCESS
+  (`BUILD SUCCESSFUL in 47s`, `apksigner verify` => Verifies, artifact
+  `LuxChart-release-apk-5`, app-release.apk 129,821 bytes, versionName 1.1.0,
+  versionCode 5). Download:
+  https://github.com/ferdausfs/luxchart/actions/runs/38439291612
+  - this log commit: recorded as repository HEAD at push time
+- **Pending items:** none from the original 9. Watchlist for future sessions:
+  POST_NOTIFICATIONS permission for download progress on Android 13+ (default
+  omitted — downloads still work silently), desktop UA string rotation.
+- **Notes for next agent:** Keystore reused (NOT recreated) — fingerprint
+  unchanged, old APKs update in place. One feature per session still applies.
+  `textZoom=100`, long-press suppression, and blob:/data: download rejection
+  are deliberate defaults. Do not change applicationId
+  `com.ferdausfs.luxchart`.
+
+---
+
 ## Session 1 (addendum) — 2026-10-14 — BUILD RESULT: GREEN
 
 - **Agent/Tool:** GLM (Super Z CLI) acting as senior Android engineer
