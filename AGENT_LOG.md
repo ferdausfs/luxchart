@@ -10,6 +10,33 @@ secret values in this file. Secret *names* and file *names* are allowed.
 
 ---
 
+## Session 1 (addendum) — 2026-10-14 — BUILD RESULT: GREEN
+
+- **Agent/Tool:** GLM (Super Z CLI) acting as senior Android engineer
+- **Feature:** CI FIRST build result (no code changes in this commit — log only)
+- **What changed:** AGENT_LOG.md only. Records commit hashes, CI runs, artifact.
+- **Touched files:** `AGENT_LOG.md`
+- **Commit hashes:**
+  - skeleton commit: `28a841f81ff8ad22f7dcdf0b1dc519fdc980496e`
+  - signing fix commit: `c15a5e7ad26c34b757f3a0eed5c198d120820d6f`
+  - this log commit: recorded as the repository HEAD at push time
+- **Build results (GitHub Actions):**
+  - Run #1 (skeleton): FAILURE — `SigningConfig "release" is missing required
+    property "keyPassword"` (Kotlin name shadowing: `keyPassword = keyPassword`
+    self-assigned the property). Fixed in commit `c15a5e7` by renaming the env
+    val to `keyPasswordValue`.
+  - Run #2 (fix): SUCCESS — `BUILD SUCCESSFUL in 48s`,
+    `apksigner verify --verbose` => Verifies (build-tools 37.0.0),
+    artifact `LuxChart-release-apk-2` (app-release.apk, 24,641 bytes,
+    versionName 1.0.0, versionCode 2 = run number).
+    Download: https://github.com/ferdausfs/luxchart/actions/runs/38431517449
+- **Pending items:** unchanged (see Session 1 entry below)
+- **Notes for next agent:** keystore fingerprint was delivered to the owner
+  separately (outside this repo). Same keystore must be used for every future
+  build. Log-only commits still trigger the release workflow — harmless.
+
+---
+
 ## Session 1 — 2026-10-14 — Initial skeleton + signed release CI (bootstrap)
 
 - **Agent/Tool:** GLM (Super Z CLI) acting as senior Android engineer
