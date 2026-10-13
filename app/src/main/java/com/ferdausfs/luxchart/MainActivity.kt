@@ -284,10 +284,12 @@ class MainActivity : ComponentActivity() {
             setSupportZoom(false)
             builtInZoomControls = false
             displayZoomControls = false
-            overScrollMode = View.OVER_SCROLL_NEVER
-            isVerticalScrollBarEnabled = false
-            isHorizontalScrollBarEnabled = false
         }
+        // View-level properties (not WebSettings): no overscroll glow/stretch,
+        // no scrollbars over the charts.
+        webView.overScrollMode = View.OVER_SCROLL_NEVER
+        webView.isVerticalScrollBarEnabled = false
+        webView.isHorizontalScrollBarEnabled = false
         // Long-press on charts is a drawing-tool gesture in luxalgo — suppress
         // the text-selection popup so it is not stolen from the canvas.
         webView.setOnLongClickListener { true }
