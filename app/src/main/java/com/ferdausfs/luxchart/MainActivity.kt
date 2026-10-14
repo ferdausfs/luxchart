@@ -54,6 +54,9 @@ import java.net.URLEncoder
  *  2. Immersive fullscreen + landscape (rotation without reload via configChanges)
  *  3. Back button: goBack() when possible, else exit (OnBackPressedCallback)
  *  4. Offline/error page with Retry + auto-retry when the network returns
+ *     (REAL network errors on the main frame only — HTTP >= 400 responses
+ *     such as Cloudflare challenges, 403 and 429 render normally so the
+ *     site can run its own interstitials)
  *  5. Pull-to-refresh: none exists (no SwipeRefreshLayout) + overscroll disabled
  *  6. Chart gesture fix: WebView-level pinch-zoom disabled so the chart canvas
  *     owns pan/pinch; wide viewport + desktop UA kept; long-press selection off
@@ -327,15 +330,11 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        override fun onReceivedHttpError(
-            view: WebView,
-            request: WebResourceRequest,
-            response: WebResourceResponse
-        ) {
-            if (request.isForMainFrame && response.statusCode >= 400) {
-                showError(request.url.toString(), "HTTP ${response.statusCode}")
-            }
-        }
+        // NOTE: onReceivedHttpError is intentionally NOT overridden. HTTP >= 400
+        // responses (Cloudflare challenge, 403, 429, …) must be rendered by the
+        // page itself; replacing them with our offline screen would break logins
+        // and bot-protection interstitials. The offline error page is shown
+        // exclusively for real main-frame network errors above.
 
         override fun onPageFinished(view: WebView?, url: String?) {
             if (!errorShowing && url != null && !url.startsWith("file:")) {
