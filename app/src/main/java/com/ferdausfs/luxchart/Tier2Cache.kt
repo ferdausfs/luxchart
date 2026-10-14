@@ -174,8 +174,26 @@ class Tier2Cache(
                 return null
             }
             val stream = if (status in 200..299) conn.inputStream else conn.errorStream
-            body = stream?.use { input -> input.readNBytes(maxSingleResponseBytes + 1) }
-                ?: ByteArray(0)
+            // readNBytes is API 33+; manual chunked read keeps minSdk 24.
+            body = if (stream != null) {
+                val out = java.io.ByteArrayOutputStream(maxSingleResponseBytes.coerceAtMost(1 shl 20))
+                val chunk = ByteArray(64 * 1024)
+                val limit = maxSingleResponseBytes + 1
+                stream.use { input ->
+                    while (true) {
+                        val n = input.read(chunk)
+                        if (n == -1) break
+                        if (out.size() + n > limit) {
+                            out.write(chunk, 0, limit - out.size())
+                            break
+                        }
+                        out.write(chunk, 0, n)
+                    }
+                }
+                out.toByteArray()
+            } else {
+                ByteArray(0)
+            }
             if (body.size > maxSingleResponseBytes) {
                 diagnostics.skipped.incrementAndGet()
                 diagnostics.recordSkipped(hostOf(url) + pathOf(url))
