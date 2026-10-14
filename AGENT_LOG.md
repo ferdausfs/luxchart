@@ -8,6 +8,100 @@ files, commit hash, pending items, notes for next agent.
 SECURITY: never record tokens, passwords, keystore contents, base64 blobs, or
 secret values in this file. Secret *names* and file *names* are allowed.
 
+## Phase 8 — 2026-10-15 — BUG A/BUG B device fixes + code-review gaps G1-G9 + UI polish (versionName 1.9.0)
+
+- **Agent/Tool:** GLM (Super Z CLI) acting as senior Android engineer
+- **Feature:** "Return to where I was" + "already-loaded timeframes open
+  instantly from saved data" + every G-gap from the code review + premium
+  UI polish. Signing/CI/applicationId, main-frame policy, hotfix-1.6.1
+  protections (no WebView access off-main, try/catch(Throwable)->null,
+  kill switch) and the 4 Actions secrets (names verified via API:
+  KEYSTORE_BASE64 / KEYSTORE_PASSWORD / KEY_ALIAS / KEY_PASSWORD) all
+  untouched.
+- **What changed (one commit per item, CI per push):**
+  - A1 BUG A (478109c): last real page URL persisted in
+    SharedPreferences (page start + onPause), restored on COLD launch;
+    Policy.restoreAllowed (pure) = https + allow-listed host + no sensitive
+    PATH segment, else START_URL. Process-death restore keeps the Bundle.
+  - B1 BUG B (77a8f94): ROOT CAUSE CONFIRMED in code — exact cacheKey keeps
+    from/to/countback, so the chart's moving time window NEVER repeated a
+    key. Fix = relaxed key: Policy.TIME_WINDOW_QUERY_PARAMS +
+    relaxedNormalizeUrl/relaxedCacheKey (METHOD|R|G<gen>|…, keeps
+    symbol/resolution/type/path); every store writes a meta-only relaxed
+    POINTER (latest-wins, single body copy); OFFLINE exact-miss serves the
+    relaxed entry (HIT-RELAXED); ONLINE unchanged (exact-key cache-first).
+  - Evidence tool (9369d0c): diagnostics dialog gained "Copy chart report"
+    (Policy.chartLikeRequest pure) — 120-entry ring of chart-like requests
+    with method + decision + key SEEN/NEW (query KEY NAMES only, never
+    values/cookies/tokens/bodies).
+  - G1 (d528405): challenge skip — Policy.isChallengeResponse (403/429/503
+    or cf-mitigated/cf-challenge/cf-chl headers; plain server:cloudflare is
+    NOT a hint) => return null, never store, challengeSkips counter,
+    3-in-a-row per host blocks ONLINE interception for the run
+    (SKIP:challenge-host); other 4xx/5xx still return the real response
+    (null would cause the double download the rule avoids).
+  - G2 (7f7fd58 + smart-cast fix 202af93): static-asset 7-day TTL (Policy.
+    STATIC_REVALIDATE_TTL_MS + staticNeedsRevalidate pure), background
+    conditional revalidation (If-None-Match/If-Modified-Since from persisted
+    ETag/Last-Modified — both added to SAFE_RESPONSE_HEADERS), 304 touches
+    saved-at, 200 overwrites, everything else keeps the entry; STILL no
+    auto-deletion. RUN #48 RED: Kotlin smart cast from `key != null` does
+    not reach the else-if branch — fixed by repeating the guard (202af93).
+  - G3 (7ea2270): per-login CACHE GENERATION embedded in EVERY key
+    (cacheKey/relaxedCacheKey/shellKey gained a generation param, default 0
+    keeps old tests valid); bumped on logout navigation
+    (Policy.isLogoutNavigation: logout/logoff/signout/sign-out path segments
+    only), session-cookie loss (snapshot watcher in onPageStarted) and
+    Clear-saved-data; old-gen entries IGNORED, never auto-deleted.
+  - G4 (3385ced): LuxBridge acts only while the error page shows;
+    clearSavedData shows a native CONFIRM dialog first (error.html no
+    longer self-labels); LuxBlob checks the current main-frame host
+    (@Volatile mainFrameHost) + Policy.sanitizeBlobFileName (rejects / and
+    \, .., control chars, hidden names; 80-char cap, keeps short ext);
+    androidx.webkit pinned 1.12.1 and USED: canvas-lock CSS now injected at
+    document start via WebViewCompat.addDocumentStartJavaScript (allowed
+    origin rules = luxalgo hosts only; onPageFinished stays as fallback).
+  - G5+G6+G7 (f8f1b38, one commit — three tiny same-file lifecycle fixes):
+    webView.onPause/onResume wired to the Activity (webview-LOCAL only;
+    pauseTimers deliberately NOT called — in-page price-alert timers keep
+    running); back on the error page goes back to a real http(s) history
+    entry when one exists (canGoBackToRealPage) else exits;
+    layoutInDisplayCutoutMode=SHORT_EDGES (API 28+) + insets now union
+    systemBars/displayCutout/ime per edge.
+  - UI (d8d641a): non-blocking "Saved data" / "Updating…" chip (overlay
+    pill, fade in/out, no layout shift, touches pass through, reduced-motion
+    aware) driven by new Tier2Cache onCacheServed/onRefreshComplete
+    callbacks; "Updating…" settles back to "Saved data" when the background
+    refresh finishes.
+  - G8+G9+B3+docs (da04edc): README documents every Phase 8 behavior +
+    limits (POST/WebSocket non-cacheable — B3; page-side recomputation;
+    TTL revalidation; single-user Authorization + generation trade-offs);
+    Start URL section matches the code EXACTLY (G9 verified: README and
+    START_URL were already identical; cold-launch restore documented);
+    Scope section added (Tier2Cache ~1.6k lines, Policy = all pure rules);
+    G8 dead-code scan: NONE found (shouldSkipRequest is test-used, all
+    other members referenced); APP_VERSION_NAME -> 1.9.0 (+ version assert
+    test bumped).
+  - AGENT_LOG entry (this commit): prepended with scripts/prepend_phase8.py
+    (idempotent), pushed BY SHA.
+- **Pending items / notes for the next agent:**
+  - B2 (page-level fetch/XHR capture via addDocumentStartJavaScript +
+    IndexedDB for POST/GraphQL candles) is DELIBERATELY NOT BUILT: no
+    runtime evidence yet. ACTION: ask the user to run the new diagnostics
+    dialog -> "Copy chart report" and paste it; if POST rows appear on
+    chart-like paths (decision SKIP:non-GET), implement B2 next session.
+  - B3: WebSocket frames remain non-cacheable by design — do not fake.
+  - The 3-strike challenge-blocked host list is per-run (in-memory);
+    persisted blocking was NOT requested.
+  - Relaxed pointer metas add ~200 B per store; the 4 GB cap counts .bin
+    bodies only (unchanged accounting).
+  - Legacy v1.7/v1.8 entries without saved-at never take the TTL path
+    (their age is unknown); they gain a timestamp on their next store.
+- **Verification:** CI green across the phase (per-commit runs; #48 red =
+  Kotlin smart-cast, fixed 202af93); signed release APK from the workflow
+  artifact; versionName 1.9.0 / versionCode = run number. Secrets never
+  written to any file (inline push URLs only; token to be REVOKED by owner).
+
 ## Phase 7 — 2026-10-14 — SAVED DATA STAYS UNTIL I CLEAR IT: cache-first offline/online data cache (versionName 1.8.0)
 
 - **Agent/Tool:** GLM (Super Z CLI) acting as senior Android engineer
