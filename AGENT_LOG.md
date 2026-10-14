@@ -10,6 +10,42 @@ secret values in this file. Secret *names* and file *names* are allowed.
 
 ---
 
+## Phase 2 — 2026-10-14 — Login + compatibility (versionName 1.3.0)
+
+- **Agent/Tool:** GLM (Super Z CLI) acting as senior Android engineer
+- **Feature:** Phase 2 — login + compatibility (3 items, owner mandate)
+- **What changed:**
+  5. Blanket `setOnLongClickListener { true }` REMOVED (paste/select works in
+     login fields again); `onPageFinished` injects an idempotent style tag
+     (`#luxchart-canvas-lock`: `canvas{-webkit-user-select:none!important;
+     -webkit-touch-callout:none!important}`) so canvases — including
+     SPA-created ones — still don't open the selection popup.
+  6. Desktop UA built at runtime: `Policy.desktopUa(
+     WebSettings.getDefaultUserAgent(this))` extracts the REAL WebView Chrome
+     major into the exact Windows template; hardcoded `Chrome/131` deleted
+     (conservative 124 fallback only when no parseable major exists).
+  7. Allow-list in ONE place: `Policy.kt` `ALLOWED_HOSTS` — luxalgo.com,
+     accounts.google.com, appleid.apple.com, facebook.com,
+     accounts.youtube.com, discord.com, login.microsoftonline.com,
+     checkout.stripe.com, js.stripe.com, paypal.com,
+     challenges.cloudflare.com (+ subdomains each). External-browser handoff
+     now Toasts the host (`opening_external`). NEW pure `Policy.kt`
+     (no Android imports) + `PolicyTest` (19 JVM tests: UA builder,
+     allow-list matcher incl. lookalike rejection, data-URL parsing) and a CI
+     step `./gradlew testDebugUnitTest` BEFORE `assembleRelease` (rest of the
+     workflow unchanged). versionName 1.3.0.
+- **Touched files:** `Policy.kt` (new), `app/src/test/.../PolicyTest.kt` (new),
+  `MainActivity.kt`, `app/build.gradle.kts` (+junit dep),
+  `.github/workflows/release.yml`, `strings.xml`, `README.md`
+- **Commit hashes:** `e14e4a8` (item 5), `179a14f` (item 6),
+  `31d779a` (item 7)
+- **Build:** CI run #12 — GREEN, artifact
+  `LuxChart-release-apk-12`: https://github.com/ferdausfs/luxchart/actions/runs/38515391880
+- **Pending items:** none for this phase
+- **Notes for next agent:** add future pure-logic helpers to `Policy.kt` and
+  keep it Android-import-free so tests stay JVM-only.
+---
+
 ## Phase 1 — 2026-10-14 — Stability hardening (versionName 1.2.0)
 
 - **Agent/Tool:** GLM (Super Z CLI) acting as senior Android engineer
