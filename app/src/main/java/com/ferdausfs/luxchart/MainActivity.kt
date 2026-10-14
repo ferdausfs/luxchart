@@ -485,6 +485,12 @@ class MainActivity : ComponentActivity() {
             // Throwable (including Errors from the engine itself) degrades to
             // null so the WebView simply loads the resource its own way.
             return try {
+                // Hotfix 1.6.1 item 3: main-frame navigations are NEVER
+                // intercepted — the WebView owns them (Tier-1 cache mode
+                // already covers offline for pages), and intercepting the
+                // document itself slows first paint and fights
+                // Cloudflare/login flows.
+                if (request.isForMainFrame) return null
                 tier2Cache?.intercept(
                     request.method,
                     request.url.toString(),

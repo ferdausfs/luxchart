@@ -147,12 +147,21 @@ class Tier2Cache(
                 requestMethod = "GET"
                 connectTimeout = CONNECT_TIMEOUT_MS
                 readTimeout = READ_TIMEOUT_MS
+                // Hotfix 1.6.1 item 3: redirects are the WebView's business —
+                // this fetch must answer with the 3xx itself (caller returns
+                // null for it) instead of silently following it.
+                instanceFollowRedirects = false
                 setRequestProperty("Accept-Encoding", "identity") // predictable body
                 userAgent?.let { setRequestProperty("User-Agent", it) }
                 cookieHeader(url)?.takeIf { it.isNotBlank() }
                     ?.let { setRequestProperty("Cookie", it) }
-                // Forward nothing else: never forward Authorization etc. (skip
-                // rules already keep authed requests out, belt and braces).
+                // Hotfix 1.6.1 item 3: forward the page's own CORS/context
+                // headers (Origin/Referer/Accept/Accept-Language) so gated
+                // endpoints answer exactly as they would for the WebView.
+                // Pure filter — Authorization/Range/cookies are NEVER forwarded.
+                Policy.forwardableRequestHeaders(requestHeaders).forEach { (n, v) ->
+                    setRequestProperty(n, v)
+                }
             }
         } catch (e: Exception) {
             noteFailure()
@@ -166,6 +175,13 @@ class Tier2Cache(
             status = conn.responseCode
             headers = conn.headerFields.filterKeys { it != null }
                 .mapKeys { it.key as String }
+            if (status in 300..399) {
+                // Hotfix 1.6.1 item 3: never intercept redirects — the WebView
+                // must run its own redirect + cookie handling for them.
+                diagnostics.skipped.incrementAndGet()
+                diagnostics.recordSkipped(hostOf(url) + pathOf(url))
+                return null
+            }
             val contentLength = conn.contentLengthLong
             if (contentLength > maxSingleResponseBytes) {
                 // Too big to buffer — let the WebView stream it itself.
@@ -212,6 +228,13 @@ class Tier2Cache(
             return null
         }
 
+        // Hotfix 1.6.1 item 3: hand every Set-Cookie of an intercepted
+        // response to the WebView's cookie store BEFORE returning, so the
+        // page's session state stays coherent. (The response we replay to
+        // the WebView never carries cookie headers, and disk storage still
+        // refuses Set-Cookie responses — see Policy.shouldStoreResponse.)
+        applySetCookies(url, headers)
+
         val response = buildResponse(status, headers, body)
         diagnostics.stored.incrementAndGet()
         resetFailures()
@@ -250,6 +273,27 @@ class Tier2Cache(
             }
         }
         return response
+    }
+
+    /**
+     * Applies intercepted Set-Cookie headers to the WebView cookie store.
+     * CookieManager is documented as usable from any thread once a WebView
+     * exists (the engine already calls getCookie from this same IO thread);
+     * every call is still guarded — cookie sync is best-effort, never a
+     * crash source (hotfix 1.6.1).
+     */
+    private fun applySetCookies(url: String, headers: Map<String, List<String>>) {
+        val cookies = headers.entries
+            .filter { it.key.equals("Set-Cookie", ignoreCase = true) }
+            .flatMap { it.value }
+        if (cookies.isEmpty()) return
+        try {
+            val cm = android.webkit.CookieManager.getInstance()
+            cookies.forEach { raw -> runCatching { cm.setCookie(url, raw) } }
+            cm.flush()
+        } catch (e: Exception) {
+            // best-effort
+        }
     }
 
     // ---- Disk ----------------------------------------------------------------

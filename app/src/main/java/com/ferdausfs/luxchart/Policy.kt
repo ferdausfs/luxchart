@@ -109,8 +109,9 @@ object Policy {
     /**
      * Request-level cache-skip rules. TRUE means: never touch the cache for
      * this request (just let the WebView do its default thing).
-     * Never: non-GET, Authorization header, WebSocket upgrade, non-http(s),
-     * and URLs containing auth/login/token/session/payment.
+     * Never: non-GET, Authorization header, Range (partial-content) request,
+     * WebSocket upgrade, non-http(s), and URLs containing
+     * auth/login/token/session/payment.
      */
     fun shouldSkipRequest(
         method: String?,
@@ -122,6 +123,9 @@ object Policy {
         val u = url.trim().lowercase()
         if (!u.startsWith("https://") && !u.startsWith("http://")) return true // incl. ws/wss
         if (requestHeaders.keys.any { it.equals("Authorization", ignoreCase = true) }) return true
+        // Hotfix 1.6.1 item 3: partial-content requests must never be
+        // intercepted (the WebView negotiates ranges itself).
+        if (requestHeaders.keys.any { it.equals("Range", ignoreCase = true) }) return true
         if (requestHeaders.entries.any {
                 it.key.equals("Upgrade", ignoreCase = true) &&
                     it.value.equals("websocket", ignoreCase = true)
@@ -129,6 +133,35 @@ object Policy {
         ) return true
         val pathAndQuery = u.substringAfter("://")
         return NEVER_CACHE_URL_TOKENS.any { pathAndQuery.contains(it) }
+    }
+
+    // ---- Request-header forwarding (hotfix 1.6.1 item 3, pure, tested) -------
+
+    /**
+     * Headers copied from the ORIGINAL request onto the Tier-2 re-fetch.
+     * Exactly the CORS/context headers the page expects — NOTHING sensitive:
+     * Authorization is kept out by the skip rules and is never forwarded.
+     */
+    val FORWARDED_REQUEST_HEADERS = listOf(
+        "Origin", "Referer", "Accept", "Accept-Language"
+    )
+
+    /**
+     * Pure filter: from the original request headers, keep ONLY
+     * [FORWARDED_REQUEST_HEADERS] (case-insensitive), remapped to their
+     * canonical spelling; blank values are dropped. Everything else
+     * (Authorization, Range, Cookie, User-Agent, …) is never forwarded.
+     */
+    fun forwardableRequestHeaders(requestHeaders: Map<String, String>?): Map<String, String> {
+        if (requestHeaders.isNullOrEmpty()) return emptyMap()
+        val out = LinkedHashMap<String, String>()
+        requestHeaders.forEach { (name, value) ->
+            if (value.isNullOrBlank()) return@forEach
+            val canonical = FORWARDED_REQUEST_HEADERS
+                .firstOrNull { it.equals(name, ignoreCase = true) } ?: return@forEach
+            out[canonical] = value.trim()
+        }
+        return out
     }
 
     /**
