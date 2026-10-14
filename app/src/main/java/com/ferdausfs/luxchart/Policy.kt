@@ -57,6 +57,28 @@ object Policy {
     }
 
     /**
+     * Splits a `data:` URL into its parts WITHOUT decoding (decoding uses
+     * android.util.Base64 in the app, which is not JVM-testable here).
+     * Returns null for anything that is not a well-formed data URL.
+     */
+    fun dataUrlParts(url: String?): DataUrlParts? {
+        if (url == null || !url.startsWith("data:", ignoreCase = true)) return null
+        val comma = url.indexOf(',')
+        if (comma < 0) return null
+        val header = url.substring(5, comma)
+        val mime = header.substringBefore(';').trim().takeIf { it.isNotEmpty() }
+        val isBase64 = header.split(';').any { it.trim().equals("base64", ignoreCase = true) }
+        return DataUrlParts(mime, isBase64, url.substring(comma + 1))
+    }
+
+    /** Parts of a data: URL (see [dataUrlParts]). */
+    class DataUrlParts(
+        val mime: String?,
+        val isBase64: Boolean,
+        val payload: String
+    )
+
+    /**
      * Desktop user-agent built at runtime from the system WebView UA.
      *
      * Format mandated by the site: Windows Chrome desktop UA whose MAJOR

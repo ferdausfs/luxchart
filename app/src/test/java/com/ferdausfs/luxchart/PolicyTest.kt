@@ -110,4 +110,37 @@ class PolicyTest {
         assertFalse(Policy.isLuxAlgo("luxalgo.com.evil.io"))
         assertFalse(Policy.isLuxAlgo(null))
     }
+
+    // ---- data: URL parsing (blob/data downloads) -----------------------------
+
+    @Test
+    fun `base64 data url is split correctly`() {
+        val parts = Policy.dataUrlParts("data:application/pdf;base64,JVBERi0=")!!
+        assertEquals("application/pdf", parts.mime)
+        assertTrue(parts.isBase64)
+        assertEquals("JVBERi0=", parts.payload)
+    }
+
+    @Test
+    fun `urlencoded data url is detected`() {
+        val parts = Policy.dataUrlParts("data:text/plain,hello%20world")!!
+        assertEquals("text/plain", parts.mime)
+        assertFalse(parts.isBase64)
+        assertEquals("hello%20world", parts.payload)
+    }
+
+    @Test
+    fun `data url without mime gets null mime`() {
+        val parts = Policy.dataUrlParts("data:;base64,AAA=")!!
+        assertEquals(null, parts.mime)
+        assertTrue(parts.isBase64)
+        assertEquals("AAA=", parts.payload)
+    }
+
+    @Test
+    fun `garbage data urls return null`() {
+        listOf(null, "http://x/y", "data:nocomma", "blob:https://x/abc").forEach {
+            assertEquals(it, null, Policy.dataUrlParts(it))
+        }
+    }
 }

@@ -4,6 +4,7 @@ import android.animation.ValueAnimator
 import android.annotation.SuppressLint
 import android.app.DownloadManager
 import android.content.ActivityNotFoundException
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -17,7 +18,9 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.provider.MediaStore
 import android.provider.Settings
+import android.util.Base64
 import android.view.HapticFeedbackConstants
 import android.view.View
 import android.view.ViewGroup
@@ -46,6 +49,12 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import org.json.JSONObject
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.concurrent.Executors
 import java.net.URLEncoder
 
 /**
@@ -89,6 +98,12 @@ class MainActivity : ComponentActivity() {
 
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
     private var pendingDownload: PendingDownload? = null
+    private var pendingBlob: PendingBlob? = null
+
+    /** Single background worker for blob/data file saves (never the main thread). */
+    private val blobIoExecutor = Executors.newSingleThreadExecutor()
+
+    private class PendingBlob(val bytes: ByteArray, val mime: String?, val displayName: String)
 
     private data class PendingDownload(
         val url: String,
@@ -112,10 +127,18 @@ class MainActivity : ComponentActivity() {
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             val data = pendingDownload
             pendingDownload = null
+            val blob = pendingBlob
+            pendingBlob = null
             when {
-                data == null -> Unit
-                granted -> startDownload(data, publicDir = true)
-                else -> startDownload(data, publicDir = false) // app-private dir fallback
+                data == null && blob == null -> Unit
+                data != null && granted -> startDownload(data, publicDir = true)
+                data != null -> startDownload(data, publicDir = false) // app-private dir fallback
+                blob != null && granted -> blobIoExecutor.execute {
+                    saveBlobToDisk(blob, publicDir = true)
+                }
+                blob != null -> blobIoExecutor.execute {
+                    saveBlobToDisk(blob, publicDir = false) // app-private fallback
+                }
             }
         }
 
@@ -254,6 +277,7 @@ class MainActivity : ComponentActivity() {
         wv.webViewClient = LuxChartWebViewClient()
         wv.webChromeClient = LuxChartWebChromeClient()
         wv.addJavascriptInterface(ErrorPageBridge(), "LuxBridge")
+        wv.addJavascriptInterface(BlobBridge(), "LuxBlob")
         wv.setDownloadListener { url, ua, disposition, mime, _ ->
             handleDownload(url, ua, disposition, mime)
         }
@@ -605,8 +629,8 @@ class MainActivity : ComponentActivity() {
         mimeType: String?
     ) {
         if (url.startsWith("blob:") || url.startsWith("data:")) {
-            // DownloadManager cannot fetch these schemes.
-            Toast.makeText(this, R.string.download_failed, Toast.LENGTH_SHORT).show()
+            // DownloadManager cannot fetch these schemes — save in-app instead.
+            handleInternalDownload(url)
             return
         }
         val data = PendingDownload(url, userAgent, contentDisposition, mimeType)
@@ -657,6 +681,193 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    // ---- blob:/data: downloads (in-page fetch -> base64 -> disk) -------------
+
+    private fun handleInternalDownload(url: String) {
+        if (url.startsWith("data:")) {
+            // data: URLs carry the bytes themselves — parse + save directly,
+            // off the main thread (payloads can be large).
+            val parts = Policy.dataUrlParts(url)
+            if (parts == null) {
+                toastInternal(R.string.download_failed)
+                return
+            }
+            blobIoExecutor.execute {
+                val bytes = try {
+                    if (parts.isBase64) {
+                        Base64.decode(parts.payload, Base64.DEFAULT)
+                    } else {
+                        java.net.URLDecoder.decode(parts.payload, "UTF-8")
+                            .toByteArray(Charsets.UTF_8)
+                    }
+                } catch (e: IllegalArgumentException) {
+                    null
+                }
+                if (bytes == null || bytes.size > MAX_BLOB_BYTES) {
+                    toastInternal(R.string.download_failed)
+                } else {
+                    saveBlobToDisk(
+                        PendingBlob(bytes, parts.mime, defaultBlobName(parts.mime)),
+                        publicDir = true
+                    )
+                }
+            }
+        } else {
+            // blob: URLs only exist inside the page's JS context — ask the page
+            // to fetch the blob and hand us the base64 via the LuxBlob bridge.
+            fetchBlobViaJs(url)
+        }
+    }
+
+    private fun fetchBlobViaJs(blobUrl: String) {
+        val jsonUrl = JSONObject.quote(blobUrl)
+        val js = "(function(){" +
+            "var cb=window.LuxBlob;if(!cb)return;" +
+            "var url=" + jsonUrl + ";" +
+            "function fail(e){try{cb.saveError(String(e&&e.message||e));}catch(_){}}" +
+            "try{fetch(url).then(function(r){if(!r.ok)throw 'HTTP '+r.status;return r.blob();})" +
+            ".then(function(b){var fr=new FileReader();" +
+            "fr.onload=function(){try{cb.save(null,b.type||'',String(fr.result).split(',')[1]||'');}catch(e){fail(e);}};" +
+            "fr.onerror=function(){fail('read-failed');};" +
+            "fr.readAsDataURL(b);}).catch(fail);}catch(e){fail(e);}})()"
+        webView.evaluateJavascript(js, null)
+    }
+
+    /**
+     * JS bridge for blob downloads. Invoked from the page on a WebView-internal
+     * thread — never touches the UI directly. Kept by ProGuard rules.
+     */
+    private inner class BlobBridge {
+        @JavascriptInterface
+        fun save(name: String?, mime: String?, base64: String) {
+            // Tolerate a full data URL being passed instead of bare base64.
+            val clean = base64.substringAfterLast(",").trim()
+            if (clean.isEmpty() || clean.length > MAX_BLOB_BYTES / 3 * 4 + 4) {
+                toastInternal(R.string.download_failed)
+                return
+            }
+            val bytes = try {
+                Base64.decode(clean, Base64.DEFAULT)
+            } catch (e: IllegalArgumentException) {
+                toastInternal(R.string.download_failed)
+                return
+            }
+            if (bytes.size > MAX_BLOB_BYTES) {
+                toastInternal(R.string.download_failed)
+                return
+            }
+            val displayName = name?.takeIf { it.isNotBlank() && !it.contains('/') }
+                ?: defaultBlobName(mime)
+            blobIoExecutor.execute {
+                saveBlobToDisk(PendingBlob(bytes, mime, displayName), publicDir = true)
+            }
+        }
+
+        @JavascriptInterface
+        fun saveError(reason: String?) {
+            toastInternal(R.string.download_failed)
+        }
+    }
+
+    /** Saves to public Downloads (MediaStore on 29+, legacy file below). */
+    private fun saveBlobToDisk(blob: PendingBlob, publicDir: Boolean) {
+        val savedName: String? = try {
+            when {
+                !publicDir -> saveBlobPrivate(blob)
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q ->
+                    saveBlobMediaStore(blob)
+                ContextCompat.checkSelfPermission(
+                    this, android.Manifest.permission.WRITE_EXTERNAL_STORAGE
+                ) == PackageManager.PERMISSION_GRANTED ->
+                    saveBlobLegacyPublic(blob)
+                else -> {
+                    // Ask once; fall back to app-private dir if denied.
+                    pendingBlob = blob
+                    runOnUiThread {
+                        storagePermissionLauncher.launch(
+                            android.Manifest.permission.WRITE_EXTERNAL_STORAGE
+                        )
+                    }
+                    return
+                }
+            }
+        } catch (e: Exception) {
+            null
+        }
+        if (savedName != null) {
+            toastInternal(getString(R.string.blob_saved, savedName))
+        } else {
+            toastInternal(R.string.blob_failed)
+        }
+    }
+
+    private fun saveBlobMediaStore(blob: PendingBlob): String? {
+        val resolver = contentResolver
+        val values = ContentValues().apply {
+            put(MediaStore.Downloads.DISPLAY_NAME, blob.displayName)
+            put(MediaStore.Downloads.MIME_TYPE, blob.mime ?: "application/octet-stream")
+            put(MediaStore.Downloads.IS_PENDING, 1)
+        }
+        val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+            ?: return null
+        resolver.openOutputStream(uri)?.use { it.write(blob.bytes) } ?: return null
+        values.clear()
+        values.put(MediaStore.Downloads.IS_PENDING, 0)
+        resolver.update(uri, values, null, null)
+        return blob.displayName
+    }
+
+    @Suppress("DEPRECATION")
+    private fun saveBlobLegacyPublic(blob: PendingBlob): String? {
+        val dir = Environment.getExternalStoragePublicDirectory(
+            Environment.DIRECTORY_DOWNLOADS
+        )
+        if (!dir.exists()) dir.mkdirs()
+        val file = uniquify(File(dir, blob.displayName))
+        file.outputStream().use { it.write(blob.bytes) }
+        return file.name
+    }
+
+    private fun saveBlobPrivate(blob: PendingBlob): String? {
+        val dir = getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: return null
+        val file = uniquify(File(dir, blob.displayName))
+        file.outputStream().use { it.write(blob.bytes) }
+        return file.name
+    }
+
+    /** "name (2).ext" style de-duplication for the legacy/private paths. */
+    private fun uniquify(file: File): File {
+        if (!file.exists()) return file
+        val base = file.name.substringBeforeLast('.', file.name)
+        val ext = file.name.substringAfterLast('.', "").takeIf { it.isNotEmpty() }
+        var i = 1
+        var candidate = file
+        while (candidate.exists()) {
+            val n = "$base ($i)" + (ext?.let { ".$it" } ?: "")
+            candidate = File(file.parentFile, n)
+            i++
+        }
+        return candidate
+    }
+
+    private fun defaultBlobName(mime: String?): String {
+        val ext = EXT_BY_MIME.entries.firstOrNull { mime?.startsWith(it.key) == true }?.value
+            ?: "bin"
+        val ts = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
+        return "luxchart-$ts.$ext"
+    }
+
+    /** Toast helper safe to call from any thread. */
+    private fun toastInternal(message: String) {
+        runOnUiThread {
+            Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun toastInternal(resId: Int) {
+        toastInternal(getString(resId))
+    }
+
     // ---- Helpers -------------------------------------------------------------
 
     private fun dp(value: Int): Int =
@@ -673,6 +884,31 @@ class MainActivity : ComponentActivity() {
         private const val KEY_ERROR_URL = "lux.errorUrl"
         private const val KEY_CURRENT_URL = "lux.currentUrl"
         private const val MAX_RENDER_CRASHES = 3
+
+        /** Cap for in-app blob/data saves — avoids OOM on absurd payloads. */
+        private const val MAX_BLOB_BYTES = 80 * 1024 * 1024
+
+        /** mime prefix -> file extension for generated blob/data filenames. */
+        private val EXT_BY_MIME = mapOf(
+            "application/pdf" to "pdf",
+            "text/csv" to "csv",
+            "text/plain" to "txt",
+            "text/html" to "html",
+            "application/json" to "json",
+            "application/zip" to "zip",
+            "image/png" to "png",
+            "image/jpeg" to "jpg",
+            "image/webp" to "webp",
+            "image/gif" to "gif",
+            "image/svg" to "svg",
+            "application/vnd.ms-excel" to "xls",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml" to "xlsx",
+            "application/msword" to "doc",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml" to "docx",
+            "audio/mpeg" to "mp3",
+            "video/mp4" to "mp4",
+            "video/webm" to "webm"
+        )
 
         private val BG_COLOR = 0xFF0A0E14.toInt()
         private val ACCENT_COLOR = 0xFF2DD4BF.toInt()

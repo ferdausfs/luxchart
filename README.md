@@ -20,9 +20,11 @@ Personal use only.
   desktop UA kept) so the chart canvas owns pan/pinch; long-press text
   selection suppressed
 - **File upload + downloads** — `onShowFileChooser` for uploads;
-  DownloadManager for downloads (public Downloads dir; legacy
+  DownloadManager for http(s) downloads (public Downloads dir; legacy
   WRITE_EXTERNAL_STORAGE runtime request only on API < 29, app-private
-  fallback if denied)
+  fallback if denied); `blob:`/`data:` downloads fetched in-page
+  (JS fetch -> base64 -> LuxBlob bridge) and saved to Downloads via
+  MediaStore on API 29+ (legacy path below), 80 MB cap
 - **Splash screen** — androidx core-splashscreen, dark, held until the WebView
   starts painting (no white flash; reduced-motion respected)
 - **Adaptive icon** — foreground/background/monochrome layers (API 26+);

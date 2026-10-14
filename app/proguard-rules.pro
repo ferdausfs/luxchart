@@ -20,3 +20,4 @@
     @android.webkit.JavascriptInterface <methods>;
 }
 -keep class com.ferdausfs.luxchart.MainActivity$ErrorPageBridge { *; }
+-keep class com.ferdausfs.luxchart.MainActivity$BlobBridge { *; }
