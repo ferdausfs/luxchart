@@ -174,7 +174,11 @@ class MainActivity : ComponentActivity() {
 
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
-        webView.saveState(outState)
+        // Deliberately NOT calling webView.saveState(): the restored back/forward
+        // state can exceed the ~1 MB Binder transaction limit on data-heavy
+        // pages (TransactionTooLargeException). We persist only the current URL
+        // + error flag and restore by simply loading the URL again.
+        outState.putString(KEY_CURRENT_URL, currentUrl)
         outState.putBoolean(KEY_ERROR_SHOWING, errorShowing)
         pendingErrorUrl?.let { outState.putString(KEY_ERROR_URL, it) }
     }
