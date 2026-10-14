@@ -126,9 +126,23 @@ class Tier2Cache(
                 return null
             }
             return if (isOnline()) {
-                fetchAndStore(method!!, url, requestHeaders ?: emptyMap(), userAgent)
+                // Phase 7 item 1 — CACHE-FIRST ONLINE: a stored entry is
+                // served IMMEDIATELY even while online (counted as a hit).
+                // Static assets are never revalidated; API-like JSON/text
+                // gets ONE background refresh (one in-flight per key) that
+                // overwrites the stored copy for next time. No entry =>
+                // fetch, store, return (Tier-2 behaviour as before).
+                val key = Policy.cacheKey(method!!, url)
+                val hit = readFromDisk(method, url)
+                if (hit != null) {
+                    if (key != null && Policy.isApiLikeType(hit.contentType)) {
+                        scheduleBackgroundRefresh(method, url, key, requestHeaders ?: emptyMap(), userAgent)
+                    }
+                    return hit.response
+                }
+                fetchAndStore(method, url, requestHeaders ?: emptyMap(), userAgent)
             } else {
-                serveFromDisk(method!!, url)
+                readFromDisk(method!!, url)?.response
             }
         } catch (e: Exception) {
             noteFailure()
@@ -331,7 +345,19 @@ class Tier2Cache(
         }
     }
 
-    private fun serveFromDisk(method: String, url: String): WebResourceResponse? {
+    /** A served disk entry: the WebView response plus the metadata needed by
+     *  the cache-first logic (content-type for the refresh decision). */
+    private class DiskHit(
+        val response: WebResourceResponse,
+        val contentType: String?,
+        val byteCount: Int
+    )
+
+    /**
+     * Reads a stored entry from disk (online cache-first AND offline serving).
+     * Counts a hit and touches LRU recency; returns null on any miss/problem.
+     */
+    private fun readFromDisk(method: String, url: String): DiskHit? {
         val key = Policy.cacheKey(method, url)
         synchronized(lock) {
             val bodyFile = key?.let { File(dir, "$it.bin") }
@@ -340,25 +366,67 @@ class Tier2Cache(
                 diagnostics.misses.incrementAndGet()
                 return null
             }
-            val meta = JSONObject(metaFile.readText())
-            val bytes = bodyFile.readBytes()
-            bodyFile.setLastModified(System.currentTimeMillis()) // LRU touch
-            diagnostics.hits.incrementAndGet()
-            resetFailures()
-            val status = meta.optInt("status", 200)
-            val contentType = meta.optString("content-type", null)
-            val mime = contentType?.substringBefore(';')?.trim()?.ifEmpty { null }
-            val charset = contentType
-                ?.split(';')
-                ?.map { it.trim() }
-                ?.firstOrNull { it.startsWith("charset=", true) }
-                ?.substringAfter('=')?.trim(' ', '"')
-            val response = WebResourceResponse(
-                mime, charset, status, "OK", mapOf(), ByteArrayInputStream(bytes)
-            )
-            val headers = meta.optJSONObject("headers")
-            headers?.keys()?.forEach { name -> response.responseHeaders[name] = headers.getString(name) }
-            return response
+            return try {
+                val meta = JSONObject(metaFile.readText())
+                val bytes = bodyFile.readBytes()
+                bodyFile.setLastModified(System.currentTimeMillis()) // LRU touch
+                diagnostics.hits.incrementAndGet()
+                resetFailures()
+                val status = meta.optInt("status", 200)
+                val contentType = meta.optString("content-type", null)
+                val mime = contentType?.substringBefore(';')?.trim()?.ifEmpty { null }
+                val charset = contentType
+                    ?.split(';')
+                    ?.map { it.trim() }
+                    ?.firstOrNull { it.startsWith("charset=", true) }
+                    ?.substringAfter('=')?.trim(' ', '"')
+                val response = WebResourceResponse(
+                    mime, charset, status, "OK", mapOf(), ByteArrayInputStream(bytes)
+                )
+                val headers = meta.optJSONObject("headers")
+                headers?.keys()?.forEach { name -> response.responseHeaders[name] = headers.getString(name) }
+                DiskHit(response, contentType, bytes.size)
+            } catch (e: Exception) {
+                diagnostics.misses.incrementAndGet()
+                null
+            }
+        }
+    }
+
+    // ---- Background refresh (Phase 7 item 1) ----------------------------------
+
+    /** Small private pool for stale-while-revalidate refreshes. */
+    private val refreshExecutor = Executors.newFixedThreadPool(2)
+
+    /** Keys with a refresh currently running — ONE in-flight per key (spec). */
+    private val refreshInFlight = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    /**
+     * Schedules ONE background refresh of a just-served cache-first entry:
+     * the same fetch+store path as a normal online fetch, its response
+     * discarded — the point is to overwrite the stored copy for next time.
+     * One in-flight per key; never throws; nothing touches the WebView.
+     */
+    private fun scheduleBackgroundRefresh(
+        method: String,
+        url: String,
+        key: String,
+        requestHeaders: Map<String, String>,
+        userAgent: String?
+    ) {
+        if (!refreshInFlight.add(key)) return // already refreshing this key
+        try {
+            refreshExecutor.execute {
+                try {
+                    fetchAndStore(method, url, requestHeaders, userAgent)
+                } catch (e: Exception) {
+                    // Background refresh is best-effort — never a crash source.
+                } finally {
+                    refreshInFlight.remove(key)
+                }
+            }
+        } catch (e: Exception) {
+            refreshInFlight.remove(key)
         }
     }
 

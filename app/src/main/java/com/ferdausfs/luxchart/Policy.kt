@@ -181,6 +181,35 @@ object Policy {
         return STORABLE_TYPES.any { contentType.startsWith(it) }
     }
 
+    // ---- Cache-first policy (Phase 7 item 1, pure) ----------------------------
+
+    /**
+     * MIME types considered "API-like" data responses. When such an entry is
+     * served cache-first while ONLINE, the cache schedules ONE background
+     * refresh so the stored copy stays fresh for the next load. Static assets
+     * (js/css/fonts/images/wasm/svg/html) are served as-is and are NEVER
+     * revalidated (owner requirement: instant loads, nothing auto-deleted).
+     */
+    val API_LIKE_TYPES = listOf(
+        "application/json",
+        "application/x-ndjson",
+        "application/msgpack",
+        "application/x-protobuf",
+        "text/plain"
+    )
+
+    /**
+     * TRUE => a stored response with this Content-Type should be refreshed in
+     * the background after being served cache-first online. Pure: case- and
+     * parameter-insensitive (charset suffix ignored); null/unknown => false
+     * (treated as a static asset — never refreshed).
+     */
+    fun isApiLikeType(contentType: String?): Boolean {
+        if (contentType.isNullOrBlank()) return false
+        val mime = contentType.trim().lowercase().substringBefore(';').trim()
+        return API_LIKE_TYPES.any { mime.startsWith(it) }
+    }
+
     /**
      * Cache-key normalization: lower-case scheme+host, drop the fragment,
      * drop the default port (80/443), drop an empty query separator, and
