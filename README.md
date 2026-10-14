@@ -57,48 +57,84 @@ Everything else opens in the external browser (with a short Toast naming the
 host). The list lives in ONE place: `Policy.kt` (`ALLOWED_HOSTS`), covered by
 JVM unit tests in `app/src/test/`.
 
-## Offline — how it works, and known limitations
+## Offline & cache-first — how it works, and known limitations
 
 Two layers cooperate:
 
 - **Tier 1** — when offline the WebView switches to
   `LOAD_CACHE_ELSE_NETWORK`, so anything the WebView itself cached while
   online (plus DOM storage / IndexedDB / service-worker data) is served.
-- **Tier 2** — the app intercepts GET requests to `luxalgo.com` hosts, fetches
-  them itself (cookies + the real WebView UA attached), stores 200 responses
-  (JSON/JS/CSS/fonts/images and the luxalgo HTML shell) in a private
-  versioned cache (`files/swr-cache/v1`, key = `METHOD|normalized-URL`
-  SHA-256), and serves the stored copy — with original CORS headers — when
-  you are offline. Online it behaves like stale-while-revalidate: always
-  fresh, saving a copy.
+- **Tier 2** — the app intercepts GET requests to `luxalgo.com` hosts
+  (private versioned dir `files/swr-cache/v1`, key =
+  `METHOD|normalized-URL` SHA-256) and is **CACHE-FIRST ALSO WHILE ONLINE**
+  (Phase 7):
+  - a stored entry is served instantly (counted as a hit), online or offline;
+  - static assets (js/css/fonts/images/wasm/svg/html) are never revalidated;
+  - API-like data (json/ndjson/msgpack/protobuf/text-plain) is served from
+    the store and refreshed ONCE in the background (private executor, one
+    in-flight per key) so the stored copy is fresh for NEXT time;
+  - no entry → fetched, stored atomically (body tmp-file + rename first,
+    meta with the exact body length last), then returned.
+
+**SAVED DATA STAYS UNTIL I CLEAR IT.** Nothing is deleted automatically —
+the old LRU eviction is gone. When saved data reaches the **4 GB** cap, NEW
+stores are refused and a one-time "Saved-data limit reached" toast appears;
+every existing entry stays untouched. "Clear saved data" (offline/error
+screen) is the ONLY deletion path. Diagnostics always show the exact
+saved-data size.
+
+**Diagnostics + request log** — long-press the offline banner, or press
+**Volume-Down 3× within 2 s** (works online too): copy/share a report with
+the counters (hits, cache-first hits, background refresh updates, bytes
+served from cache, stored, skipped), the saved-shell section and the last
+**300 luxalgo requests**: time, method, host+path, query KEY NAMES only
+(never values), status, content-type, size and the decision
+(`HIT` / `STORED` / `REFRESHED` / `SKIP:<reason>` / `NETWORK`). Headers,
+cookies, tokens and bodies are never logged.
+
+**Authorization trade-off (single-user personal app):** GETs that carry an
+`Authorization` header ARE cached. The header value is forwarded to the
+origin in memory only — never stored on disk, never in cache meta, never
+part of the cache key (key = method + normalized URL by construction) and
+never logged — but the authorized RESPONSE BODY is saved in app-private
+storage and served again until you clear saved data. If you hand the device
+to someone, clear saved data first.
 
 **Known limitations (by design, documented for AGENT_LOG):**
-- **WebSocket** traffic (`ws://`/`wss://`, `Upgrade: websocket`) is never
-  intercepted or cached — live-streaming features need internet.
-- **POST/PUT/DELETE** are never cached — only idempotent GETs.
-- **Auth-gated data IS cached, with a documented trade-off (Phase 7)**:
-  GETs that carry an `Authorization` header are cached like any other GET.
-  The header value itself is forwarded to the origin in memory only — it is
-  never stored on disk, never written into cache meta, never part of the
-  cache key (key = `METHOD|normalized-URL`, headers cannot influence it) and
-  never logged. The RESPONSE BODY of an authorized request, however, IS
-  saved in app-private storage and served again (online cache-first and
-  offline) until "Clear saved data" wipes it. For a single-user personal app
-  this is safe by construction (private storage, no other app can read it);
-  if you hand the device to someone, clear saved data first.
-- **Streaming responses** (`text/event-stream`, gRPC) are never cached.
-- **Stale-while-revalidate, no TTL**: offline you see the last stored copy —
-  it may be outdated. Nothing expires by time; only the 500 MB LRU evicts.
-- **Size caps**: 500 MB total (evicted to ~80% of the cap), 25 MB per
-  response (larger responses stream normally but are not cached).
-- **Third-party hosts are never touched or cached** — only `luxalgo.com` and
+- **POST bodies and WebSocket traffic are not cacheable via
+  shouldInterceptRequest** — request bodies never reach the interceptor and
+  `ws://`/`wss://` upgrades are skipped; live-streaming features need
+  internet.
+- **Page-side recomputation (indicators) is the site's own JS** — the app
+  can cache indicator code and input data, but values the page's JS
+  recomputes appear only when that JS runs; the app cannot force it offline.
+- Cache-first means static assets stay until you clear: after a site
+  redesign use "Clear saved data" once (API data refreshes itself in the
+  background; static assets intentionally never do).
+- Sensitive **PATH segments** (auth, oauth, oauth2, login, logout, signin,
+  signup, token, tokens, session, sessions, payment, payments, checkout) are
+  never cached — path-segment equality only, NEVER the host, NEVER the query.
+- Streaming responses (`text/event-stream`, gRPC) pass through live and are
+  never buffered or stored.
+- Responses with a known length > **100 MB**, and unknown-length (gzip /
+  chunked) bodies that exceed the 4 MB probe window, stream through
+  (already-read prefix + remaining stream via SequenceInputStream — no
+  double download, connection closed with the stream) and are not stored.
+- Responses WITH `Set-Cookie` ARE stored: the cookie header is stripped from
+  the persisted meta automatically, while fetched cookies are still applied
+  to the CookieManager.
+- Cache keys ignore noisy query params (`_`, `t`, `ts`, `_t`, `timestamp`,
+  `cb`, `cachebust`, `nocache`, `rnd`, `random`) so cache-buster URLs share
+  one entry; all other params (symbol/resolution/from/to/…) are kept.
+- Corrupt entries (stored length mismatch on read) are deleted and treated
+  as a plain MISS — never an exception, never counted toward the
+  3-failure disable.
+- Third-party hosts are never touched or cached — only `luxalgo.com` and
   subdomains.
-- **Fragile-network guard**: 3 consecutive interceptor failures disable
-  Tier 2 until the next app start (the cache must never break the app).
-- **Bot protections / logins** generally cannot complete offline; the
+- Fragile-network guard: 3 consecutive interceptor failures disable Tier 2
+  until the next app start (the cache must never break the app).
+- Bot protections / logins generally cannot complete offline; the
   implementation is best-effort generic, not a LuxAlgo-specific product.
-- Diagnostics are privacy-safe by construction: counters + `host/path` only
-  (never query strings, cookies, tokens, bodies).
 
 ## Requirements
 - JDK 17 (Temurin recommended)
