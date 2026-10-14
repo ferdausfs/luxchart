@@ -76,11 +76,16 @@ Two layers cooperate:
 - **WebSocket** traffic (`ws://`/`wss://`, `Upgrade: websocket`) is never
   intercepted or cached — live-streaming features need internet.
 - **POST/PUT/DELETE** are never cached — only idempotent GETs.
-- **Auth-gated data is not cached**: requests with an `Authorization` header
-  and URLs containing `auth` / `login` / `token` / `session` / `payment` are
-  always skipped; responses carrying `Set-Cookie` are never stored. You
-  cannot log in offline, and data served only behind those endpoints will
-  not appear offline.
+- **Auth-gated data IS cached, with a documented trade-off (Phase 7)**:
+  GETs that carry an `Authorization` header are cached like any other GET.
+  The header value itself is forwarded to the origin in memory only — it is
+  never stored on disk, never written into cache meta, never part of the
+  cache key (key = `METHOD|normalized-URL`, headers cannot influence it) and
+  never logged. The RESPONSE BODY of an authorized request, however, IS
+  saved in app-private storage and served again (online cache-first and
+  offline) until "Clear saved data" wipes it. For a single-user personal app
+  this is safe by construction (private storage, no other app can read it);
+  if you hand the device to someone, clear saved data first.
 - **Streaming responses** (`text/event-stream`, gRPC) are never cached.
 - **Stale-while-revalidate, no TTL**: offline you see the last stored copy —
   it may be outdated. Nothing expires by time; only the 500 MB LRU evicts.

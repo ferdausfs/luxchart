@@ -178,10 +178,21 @@ class Tier2Cache(
                 // Hotfix 1.6.1 item 3: forward the page's own CORS/context
                 // headers (Origin/Referer/Accept/Accept-Language) so gated
                 // endpoints answer exactly as they would for the WebView.
-                // Pure filter — Authorization/Range/cookies are NEVER forwarded.
+                // Pure filter — Range/cookies are NEVER forwarded.
                 Policy.forwardableRequestHeaders(requestHeaders).forEach { (n, v) ->
                     setRequestProperty(n, v)
                 }
+                // Phase 7 item 3 — Authorization ALLOWED: the original request's
+                // Authorization header is forwarded for origin calls (immediate
+                // fetch AND background refresh), in memory only. It is never
+                // persisted (disk meta carries only SAFE_RESPONSE_HEADERS),
+                // never logged, and never part of the cache key (key = METHOD +
+                // normalized URL). If an authed refresh still fails, the stored
+                // copy stays untouched (only 200s overwrite).
+                requestHeaders.entries
+                    .firstOrNull { it.key.equals("Authorization", ignoreCase = true) }
+                    ?.value?.takeIf { it.isNotBlank() }
+                    ?.let { setRequestProperty("Authorization", it) }
             }
         } catch (e: Exception) {
             noteFailure()

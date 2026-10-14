@@ -160,10 +160,13 @@ class PolicyTest {
     }
 
     @Test
-    fun `authorization header forces a skip`() {
+    fun `authorization header no longer forces a skip (Phase 7 item 3)`() {
+        // Phase 7: Authorization-carrying GETs ARE cacheable (single-user
+        // personal app). The cache key ignores headers by construction and
+        // the header value is never persisted or logged.
         val u = "https://vela.luxalgo.com/api/chart"
-        assertTrue(Policy.shouldSkipRequest("GET", u, mapOf("Authorization" to "Bearer x")))
-        assertTrue(Policy.shouldSkipRequest("GET", u, mapOf("AUTHORIZATION" to "Bearer x")))
+        assertFalse(Policy.shouldSkipRequest("GET", u, mapOf("Authorization" to "Bearer x")))
+        assertFalse(Policy.shouldSkipRequest("GET", u, mapOf("AUTHORIZATION" to "Bearer x")))
     }
 
     @Test

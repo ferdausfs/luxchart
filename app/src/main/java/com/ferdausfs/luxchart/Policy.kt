@@ -109,9 +109,16 @@ object Policy {
     /**
      * Request-level cache-skip rules. TRUE means: never touch the cache for
      * this request (just let the WebView do its default thing).
-     * Never: non-GET, Authorization header, Range (partial-content) request,
-     * WebSocket upgrade, non-http(s), and URLs containing
-     * auth/login/token/session/payment.
+     * Never: non-GET, Range (partial-content) request, WebSocket upgrade,
+     * non-http(s), and URLs with a sensitive PATH segment (Phase 7 item 4:
+     * auth, login, token, session, payment, … — path ONLY, never host,
+     * never query).
+     *
+     * Phase 7 item 3: requests WITH an `Authorization` header are ALLOWED to
+     * be cached (single-user personal app, app-private storage). The cache
+     * key is METHOD + normalized URL only — request headers can never change
+     * it — and the header/token itself is never stored on disk, never
+     * forwarded to disk meta, and never logged (see README trade-off note).
      */
     fun shouldSkipRequest(
         method: String?,
@@ -120,9 +127,10 @@ object Policy {
     ): Boolean {
         if (method.isNullOrBlank() || !method.equals("GET", ignoreCase = true)) return true
         if (url.isNullOrBlank()) return true
-        val u = url.trim().lowercase()
-        if (!u.startsWith("https://") && !u.startsWith("http://")) return true // incl. ws/wss
-        if (requestHeaders.keys.any { it.equals("Authorization", ignoreCase = true) }) return true
+        val u = url.trim()
+        if (!u.lowercase().startsWith("https://") && !u.lowercase().startsWith("http://")) {
+            return true // incl. ws/wss
+        }
         // Hotfix 1.6.1 item 3: partial-content requests must never be
         // intercepted (the WebView negotiates ranges itself).
         if (requestHeaders.keys.any { it.equals("Range", ignoreCase = true) }) return true
@@ -131,7 +139,9 @@ object Policy {
                     it.value.equals("websocket", ignoreCase = true)
             }
         ) return true
-        val pathAndQuery = u.substringAfter("://")
+        // Phase 7 item 3: Authorization no longer forces a skip (cached
+        // allowed); the sensitive-URL filter below is unchanged until item 4.
+        val pathAndQuery = u.lowercase().substringAfter("://")
         return NEVER_CACHE_URL_TOKENS.any { pathAndQuery.contains(it) }
     }
 
