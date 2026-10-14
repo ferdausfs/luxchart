@@ -103,8 +103,21 @@ class MainActivity : ComponentActivity() {
     private var networkCallbackRegistered = false
     private var renderCrashCount = 0
 
-    /** Online state — drives WebView cache mode + the offline banner. */
+    /**
+     * Online state — drives WebView cache mode + the offline banner.
+     * @Volatile: also read from WebView IO threads (shouldInterceptRequest,
+     * Phase 6 offline shell serving) — writes happen on the main thread.
+     */
+    @Volatile
     private var isOnline = true
+
+    /**
+     * Phase 6: whether the CURRENT main frame was served from a stored shell.
+     * Written by the interceptor (IO thread), read on the main thread for
+     * honest offline banner wording (item 4) and error-page messaging.
+     */
+    @Volatile
+    private var mainFrameServedFromShell = false
 
     /** Last real (http/https) page URL — kept current in onPageStarted. */
     private var currentUrl: String = START_URL
@@ -517,12 +530,22 @@ class MainActivity : ComponentActivity() {
             // Throwable (including Errors from the engine itself) degrades to
             // null so the WebView simply loads the resource its own way.
             return try {
-                // Hotfix 1.6.1 item 3: main-frame navigations are NEVER
-                // intercepted — the WebView owns them (Tier-1 cache mode
-                // already covers offline for pages), and intercepting the
-                // document itself slows first paint and fights
-                // Cloudflare/login flows.
-                if (request.isForMainFrame || tier2KilledByCrashLoop) return null
+                // Phase 6 item 2: main-frame handling. ONLINE navigations are
+                // NEVER intercepted (unchanged — Cloudflare/login flows stay
+                // untouched). OFFLINE: a stored shell for this exact URL (or
+                // the SPA start-URL shell for deep links) is served so
+                // airplane mode can still open the app; with nothing saved,
+                // null lets the WebView fail naturally into the error page.
+                if (request.isForMainFrame) {
+                    if (isOnline || tier2KilledByCrashLoop) return null
+                    if (!request.method.equals("GET", ignoreCase = true)) return null
+                    val served = tier2Cache?.serveMainFrameOffline(
+                        request.url.toString(), START_URL
+                    )
+                    mainFrameServedFromShell = served != null
+                    return served
+                }
+                if (tier2KilledByCrashLoop) return null
                 tier2Cache?.intercept(
                     request.method,
                     request.url.toString(),

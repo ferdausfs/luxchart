@@ -51,6 +51,9 @@ class Tier2Cache(
         val disabled = AtomicBoolean(false)
         val failures = AtomicInteger(0)
 
+        /** Phase 6: offline main-frame documents served from a stored shell. */
+        val shellHits = AtomicLong()
+
         private val recentSkipped = ArrayDeque<String>()
         private val ringLock = Any()
 
@@ -604,6 +607,45 @@ class Tier2Cache(
                 null
             }
         }
+    }
+
+    /**
+     * Phase 6 item 2: serves a main-frame document OFFLINE.
+     * Exact shell match first; SPA deep-link fallback to the start-URL shell
+     * (same host, path inside the start path). Auth-ish / non-https URLs are
+     * never served (same sensitive-URL rules as storage). Returns null when
+     * nothing applies — the WebView then fails naturally into the error page.
+     */
+    fun serveMainFrameOffline(url: String, startUrl: String): WebResourceResponse? {
+        return try {
+            if (!Policy.shellFetchEligible(url)) return null
+            serveShellInternal(url)
+                ?: if (Policy.spaShellFallback(url, startUrl)) serveShellInternal(startUrl)
+                else null
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun serveShellInternal(url: String): WebResourceResponse? {
+        val shell = shellFor(url) ?: return null
+        diagnostics.shellHits.incrementAndGet()
+        val mime = shell.contentType?.substringBefore(';')?.trim()?.ifEmpty { null }
+            ?: "text/html"
+        val charset = shell.contentType
+            ?.split(';')
+            ?.map { it.trim() }
+            ?.firstOrNull { it.startsWith("charset=", true) }
+            ?.substringAfter('=')?.trim(' ', '"')
+            ?: "utf-8"
+        val response = WebResourceResponse(
+            mime, charset, 200, "OK", mapOf(),
+            ByteArrayInputStream(shell.body)
+        )
+        // Replay only the safe stored headers (CORS included). Shells never
+        // carry cookie/token headers — they were filtered at store time.
+        shell.headers.forEach { (name, value) -> response.responseHeaders[name] = value }
+        return response
     }
 
     // ---- Failure circuit breaker ----------------------------------------------

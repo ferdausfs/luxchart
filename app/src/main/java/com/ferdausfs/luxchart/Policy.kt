@@ -323,6 +323,36 @@ object Policy {
     fun shellThrottleAllowed(lastAttemptMs: Long, nowMs: Long, minIntervalMs: Long): Boolean =
         lastAttemptMs <= 0L || nowMs - lastAttemptMs >= minIntervalMs
 
+    /**
+     * SPA deep-link fallback rule (pure, tested): the start-URL shell may be
+     * served for [requestUrl] when there is no exact shell match IF the
+     * request stays on the start URL's host and its path lives inside the
+     * start path (e.g. anything under /chart on vela.luxalgo.com, including
+     * /chart?symbol=BTC). Boundary-safe: /charts does NOT match /chart.
+     */
+    fun spaShellFallback(requestUrl: String?, startUrl: String?): Boolean {
+        val req = shellUrlParts(requestUrl) ?: return false
+        val start = shellUrlParts(startUrl) ?: return false
+        if (req.second != start.second) return false // must be the same host
+        val reqPath = req.third.ifEmpty { "/" }
+        val startPath = start.third.ifEmpty { "/" }
+        if (reqPath == startPath) return true
+        return reqPath.startsWith(startPath.trimEnd('/') + "/")
+    }
+
+    /** (scheme, lower-cased host, raw path) or null when unparseable. */
+    private fun shellUrlParts(url: String?): Triple<String, String, String>? {
+        if (url.isNullOrBlank()) return null
+        return try {
+            val uri = java.net.URI(url.trim())
+            val scheme = uri.scheme?.lowercase() ?: return null
+            val host = uri.host?.lowercase() ?: return null
+            Triple(scheme, host, uri.rawPath ?: "")
+        } catch (e: Exception) {
+            null
+        }
+    }
+
     // ---- Crash-loop kill switch (hotfix 1.6.1 item 5, pure, tested) ----------
 
     /**
