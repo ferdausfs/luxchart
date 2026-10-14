@@ -454,8 +454,6 @@ class Tier2Cache(
             if (!dir.exists()) dir.mkdirs()
             // Phase 7 item 2: hard stop for NEW stores at the cap — never delete.
             if (!capAllowsLocked(body.size.toLong() + META_OVERHEAD_BYTES)) return false
-            val bodyFile = File(dir, "$key.bin")
-            val metaFile = File(dir, "$key.meta")
             val meta = JSONObject()
             meta.put("url", url)
             meta.put("status", status)
@@ -469,11 +467,66 @@ class Tier2Cache(
                 }
             }
             meta.put("headers", safe)
-            bodyFile.writeBytes(body)
-            metaFile.writeText(meta.toString())
-            updateDiskBytesLocked()
+            // Phase 7 item 8: the meta records the exact body length and is
+            // written LAST, so its presence proves the body file is complete.
+            meta.put("body-length", body.size)
+            val ok = writeEntryAtomically(key, meta, body)
+            if (ok) updateDiskBytesLocked()
+            return ok
         }
-        return true
+    }
+
+    /**
+     * Phase 7 item 8 — atomic entry write: body and meta are each written to
+     * a tmp file and RENAMED into place, body first, meta LAST. A reader can
+     * therefore never observe a body without its (complete-length) meta, so
+     * a crash mid-write can only lose the new entry, never corrupt a served
+     * one. rename(2) replaces existing files on Android; the delete+rename
+     * fallback covers any filesystem that refuses. Returns TRUE on success;
+     * on failure the tmp files are cleaned up and the previous entry (if
+     * any) is left untouched.
+     */
+    private fun writeEntryAtomically(key: String, meta: JSONObject, body: ByteArray): Boolean {
+        val bodyFile = File(dir, "$key.bin")
+        val metaFile = File(dir, "$key.meta")
+        val bodyTmp = File(dir, "$key.bin.tmp")
+        val metaTmp = File(dir, "$key.meta.tmp")
+        return try {
+            bodyTmp.writeBytes(body)
+            metaTmp.writeText(meta.toString())
+            if (!bodyTmp.renameTo(bodyFile)) {
+                bodyFile.delete()
+                if (!bodyTmp.renameTo(bodyFile)) return false
+            }
+            if (!metaTmp.renameTo(metaFile)) {
+                metaFile.delete()
+                if (!metaTmp.renameTo(metaFile)) return false
+            }
+            true
+        } catch (e: Exception) {
+            runCatching { bodyTmp.delete() }
+            runCatching { metaTmp.delete() }
+            false
+        }
+    }
+
+    /**
+     * Phase 7 item 8 — read-side integrity: when the meta carries a
+     * body-length (every entry written by this version), a size mismatch
+     * means the entry is corrupt: BOTH files are deleted and the read is
+     * treated as a plain MISS — never an exception, never counted toward
+     * the 3-failure disable. Entries without the field (written by v1.7.0)
+     * are accepted so saved data survives the upgrade.
+     */
+    private fun entryIntactLocked(bodyFile: File, metaFile: File, meta: JSONObject, bytes: ByteArray): Boolean {
+        val expected = meta.optLong("body-length", -1L)
+        if (expected >= 0 && expected != bytes.size.toLong()) {
+            // corrupt (or meta of a different body) — delete and MISS
+            runCatching { bodyFile.delete() }
+            runCatching { metaFile.delete() }
+            return false
+        }
+        return true // new-version entry with matching length, or legacy entry
     }
 
     /**
@@ -520,6 +573,10 @@ class Tier2Cache(
             return try {
                 val meta = JSONObject(metaFile.readText())
                 val bytes = bodyFile.readBytes()
+                if (!entryIntactLocked(bodyFile, metaFile, meta, bytes)) {
+                    diagnostics.misses.incrementAndGet()
+                    return null
+                }
                 diagnostics.hits.incrementAndGet()
                 resetFailures()
                 val status = meta.optInt("status", 200)
@@ -537,6 +594,10 @@ class Tier2Cache(
                 headers?.keys()?.forEach { name -> response.responseHeaders[name] = headers.getString(name) }
                 DiskHit(response, contentType, bytes.size)
             } catch (e: Exception) {
+                // Corrupt/unreadable meta => delete the pair, count a MISS —
+                // never an exception to the caller, never a failure count.
+                runCatching { bodyFile.delete() }
+                runCatching { metaFile.delete() }
                 diagnostics.misses.incrementAndGet()
                 null
             }
@@ -802,8 +863,12 @@ class Tier2Cache(
                 lastShellResult = "skipped:cap"
                 return
             }
-            File(dir, "$key.bin").writeBytes(body)
-            File(dir, "$key.meta").writeText(meta.toString())
+            // Phase 7 item 8: atomic write, meta (with body-length) last.
+            meta.put("body-length", body.size)
+            if (!writeEntryAtomically(key, meta, body)) {
+                lastShellResult = "failed:write"
+                return
+            }
             updateDiskBytesLocked()
         }
     }
@@ -818,6 +883,7 @@ class Tier2Cache(
             return try {
                 val meta = JSONObject(metaFile.readText())
                 val bytes = bodyFile.readBytes()
+                if (!entryIntactLocked(bodyFile, metaFile, meta, bytes)) return null
                 val shellUrl = meta.optString("url", url)
                 val headersJson = meta.optJSONObject("headers")
                 val headers = LinkedHashMap<String, String>()
@@ -833,6 +899,9 @@ class Tier2Cache(
                     body = bytes
                 )
             } catch (e: Exception) {
+                // Corrupt shell meta => delete the pair, treat as no shell.
+                runCatching { bodyFile.delete() }
+                runCatching { metaFile.delete() }
                 null
             }
         }
