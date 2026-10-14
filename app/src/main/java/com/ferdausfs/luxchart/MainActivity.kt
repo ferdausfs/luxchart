@@ -480,12 +480,21 @@ class MainActivity : ComponentActivity() {
             // on the main thread, so it must NEVER touch `view`, `webView` or
             // any WebSettings — that was the 1.6.0 launch crash. The UA comes
             // from @Volatile requestUserAgent, captured in configureWebView.
-            return tier2Cache?.intercept(
-                request.method,
-                request.url.toString(),
-                request.requestHeaders,
-                requestUserAgent
-            )
+            //
+            // Hotfix 1.6.1 item 2: NOTHING may escape this callback. Any
+            // Throwable (including Errors from the engine itself) degrades to
+            // null so the WebView simply loads the resource its own way.
+            return try {
+                tier2Cache?.intercept(
+                    request.method,
+                    request.url.toString(),
+                    request.requestHeaders,
+                    requestUserAgent
+                )
+            } catch (t: Throwable) {
+                android.util.Log.w("LuxChart", "shouldInterceptRequest degraded to null", t)
+                null
+            }
         }
 
         override fun shouldOverrideUrlLoading(
