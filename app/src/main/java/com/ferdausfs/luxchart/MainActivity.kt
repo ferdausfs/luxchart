@@ -10,7 +10,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.graphics.Bitmap
-import android.graphics.ColorDrawable
+import android.graphics.drawable.ColorDrawable
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
@@ -87,6 +87,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var rootLayout: FrameLayout
     private lateinit var webView: WebView
     private lateinit var progressBar: ProgressBar
+    private var offlineBanner: TextView? = null
 
     private var contentReady = false
     private var contentRevealed = false
@@ -282,6 +283,22 @@ class MainActivity : ComponentActivity() {
             visibility = View.GONE
         }
         rootLayout.addView(progressBar)
+
+        // Non-blocking offline banner (Tier-1 offline): sits above the WebView,
+        // not clickable => touches pass straight through to the charts.
+        offlineBanner = TextView(this).apply {
+            text = getString(R.string.offline_banner)
+            textSize = 13f
+            gravity = Gravity.CENTER
+            setTextColor(BANNER_TEXT_COLOR)
+            background = ColorDrawable(BANNER_BG_COLOR)
+            setPadding(dp(12), dp(6), dp(12), dp(6))
+            visibility = View.GONE
+        }
+        offlineBanner?.layoutParams = FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        )
+        rootLayout.addView(offlineBanner, 1)
     }
 
     /**
@@ -679,7 +696,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun updateOfflineBanner() {
-        // Banner arrives in the next commit; state application is harmless now.
+        offlineBanner?.visibility = if (isOnline) View.GONE else View.VISIBLE
     }
 
     // ---- Allow-list + external browser ---------------------------------------
@@ -994,5 +1011,7 @@ class MainActivity : ComponentActivity() {
         private val BG_COLOR = 0xFF0A0E14.toInt()
         private val ACCENT_COLOR = 0xFF2DD4BF.toInt()
         private val PROGRESS_BG_COLOR = 0xFF1E293B.toInt()
+        private val BANNER_BG_COLOR = 0xFF334155.toInt()
+        private val BANNER_TEXT_COLOR = 0xFFFCD34D.toInt()
     }
 }

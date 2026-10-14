@@ -6,4 +6,5 @@
     <string name="opening_external">Opening %1$s in your browser…</string>
     <string name="blob_saved">Saved %1$s to Downloads</string>
     <string name="blob_failed">Couldn\'t save the file</string>
+    <string name="offline_banner">Offline: showing saved data</string>
 </resources>
