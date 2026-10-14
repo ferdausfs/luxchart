@@ -61,7 +61,9 @@ import java.net.URLEncoder
  *     site can run its own interstitials)
  *  5. Pull-to-refresh: none exists (no SwipeRefreshLayout) + overscroll disabled
  *  6. Chart gesture fix: WebView-level pinch-zoom disabled so the chart canvas
- *     owns pan/pinch; wide viewport + desktop UA kept; long-press selection off
+ *     owns pan/pinch; wide viewport + desktop UA kept; long-press selection
+ *     suppressed on CANVAS elements only via injected CSS (login fields keep
+ *     native select/paste)
  *  7. File upload (onShowFileChooser) + downloads via DownloadManager
  *  8. Splash screen (androidx core-splashscreen) with no-white-flash handoff
  *  9. Adaptive icon (foreground/background/monochrome) — res/mipmap-anydpi-v26
@@ -328,9 +330,9 @@ class MainActivity : ComponentActivity() {
         wv.overScrollMode = View.OVER_SCROLL_NEVER
         wv.isVerticalScrollBarEnabled = false
         wv.isHorizontalScrollBarEnabled = false
-        // Long-press on charts is a drawing-tool gesture in luxalgo — suppress
-        // the text-selection popup so it is not stolen from the canvas.
-        wv.setOnLongClickListener { true }
+        // NOTE: no blanket setOnLongClickListener { true } here — that broke
+        // paste/select in the login fields. Canvas-only suppression is injected
+        // per page in injectCanvasCssLock() from onPageFinished.
     }
 
     // ---- Clients -------------------------------------------------------------
@@ -394,11 +396,31 @@ class MainActivity : ComponentActivity() {
         }
 
         override fun onPageFinished(view: WebView?, url: String?) {
+            injectCanvasCssLock(view)
             if (!errorShowing && url != null && !url.startsWith("file:")) {
                 contentReady = true
                 revealContent()
             }
         }
+    }
+
+    /**
+     * Suppresses text selection / touch callout on CANVAS elements only (the
+     * chart surface must own its long-press), while login fields keep native
+     * select/paste. A style tag is used instead of inline styles so canvases
+     * created later by the SPA are covered too. Idempotent; runs on the main
+     * thread (WebView callback context).
+     */
+    private fun injectCanvasCssLock(view: WebView?) {
+        view ?: return
+        val js = "(function(){" +
+            "if(document.getElementById('luxchart-canvas-lock'))return;" +
+            "var s=document.createElement('style');" +
+            "s.id='luxchart-canvas-lock';" +
+            "s.textContent='canvas{-webkit-user-select:none!important;-webkit-touch-callout:none!important}';" +
+            "(document.head||document.documentElement).appendChild(s);" +
+            "})()"
+        view.evaluateJavascript(js, null)
     }
 
     private inner class LuxChartWebChromeClient : WebChromeClient() {
