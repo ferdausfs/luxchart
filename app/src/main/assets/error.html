@@ -90,9 +90,10 @@
         if (window.LuxBridge && window.LuxBridge.retry) window.LuxBridge.retry();
       });
       document.getElementById('clear').addEventListener('click', function () {
+        // Phase 8 G4: the app shows a native confirmation dialog first; the
+        // button label is updated by the app ONLY after the user confirms.
         if (window.LuxBridge && window.LuxBridge.clearSavedData) {
           window.LuxBridge.clearSavedData();
-          this.textContent = 'Saved data cleared';
         }
       });
     })();

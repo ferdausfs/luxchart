@@ -73,6 +73,10 @@ dependencies {
     implementation("androidx.core:core-ktx:1.15.0")               // edge-to-edge / insets compat
     implementation("androidx.activity:activity-ktx:1.9.3")        // OnBackPressedCallback, result APIs
     implementation("androidx.core:core-splashscreen:1.0.1")       // splash screen (feature 8)
+    // Phase 8 G4 (pinned): WebViewCompat.addDocumentStartJavaScript —
+    // document-start injection of the canvas lock, the same API the bridge
+    // origin work builds on. No other heavy dependency.
+    implementation("androidx.webkit:webkit:1.12.1")
 
     // JVM unit tests for pure logic (Policy: UA builder / allow-list / cache rules)
     testImplementation("junit:junit:4.13.2")

@@ -16,6 +16,9 @@
     <string name="diag_close">Close</string>
     <string name="diag_chart_report">Copy chart report</string>
     <string name="diag_chart_copied">Chart-cache report copied</string>
+    <string name="clear_confirm_title">Clear saved data?</string>
+    <string name="clear_confirm_message">This permanently deletes everything LuxChart saved offline — pages, chart data and files. This cannot be undone.</string>
+    <string name="clear_confirm_yes">Clear</string>
     <string name="crash_dialog_title">Last crash report</string>
     <string name="tier2_disabled_toast">Offline cache disabled after repeated crashes</string>
 </resources>

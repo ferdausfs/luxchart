@@ -293,4 +293,45 @@ class Phase8PolicyTest {
         assertFalse(Policy.isLogoutNavigation(null))
         assertFalse(Policy.isLogoutNavigation("::bad::"))
     }
+
+    // ---- G4: blob display-name sanitizing ---------------------------------------
+
+    @Test
+    fun `sane download names pass through unchanged`() {
+        assertEquals("btc-report.csv", Policy.sanitizeBlobFileName("btc-report.csv"))
+        assertEquals("Chart Export 2026.png", Policy.sanitizeBlobFileName("  Chart   Export 2026.png "))
+    }
+
+    @Test
+    fun `path separators and traversal are rejected outright`() {
+        assertNull(Policy.sanitizeBlobFileName("../../etc/passwd"))
+        assertNull(Policy.sanitizeBlobFileName("folder/file.csv"))
+        assertNull(Policy.sanitizeBlobFileName("folder\\file.csv"))
+        assertNull(Policy.sanitizeBlobFileName(".."))
+        assertNull(Policy.sanitizeBlobFileName("a..b"))
+        assertNull(Policy.sanitizeBlobFileName("../passwd"))
+    }
+
+    @Test
+    fun `control chars and hidden names are rejected`() {
+        assertNull(Policy.sanitizeBlobFileName("bad\u0000name.csv"))
+        assertNull(Policy.sanitizeBlobFileName("bad\nname.csv"))
+        assertNull(Policy.sanitizeBlobFileName(".hidden"))
+        assertNull(Policy.sanitizeBlobFileName("."))
+        assertNull(Policy.sanitizeBlobFileName(null))
+        assertNull(Policy.sanitizeBlobFileName("   "))
+        assertNull(Policy.sanitizeBlobFileName("\u0007\u0007"))
+    }
+
+    @Test
+    fun `overlong names are capped while keeping a short extension`() {
+        val longName = "x".repeat(100) + ".csv"
+        val capped = Policy.sanitizeBlobFileName(longName)!!
+        assertTrue(capped.length <= Policy.BLOB_NAME_MAX_CHARS)
+        assertTrue(capped.endsWith(".csv"))
+        assertTrue(capped.startsWith("x"))
+        // a nonsense "extension" (spaces / too long) => plain hard cap
+        val weird = "y".repeat(100) + ".not an ext at all really"
+        assertEquals(80, Policy.sanitizeBlobFileName(weird)!!.length)
+    }
 }

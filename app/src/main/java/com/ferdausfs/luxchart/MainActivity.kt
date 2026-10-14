@@ -58,6 +58,7 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.webkit.WebViewCompat
 import android.app.AlertDialog
 import android.widget.Button
 import android.widget.LinearLayout
@@ -192,6 +193,16 @@ class MainActivity : ComponentActivity() {
      */
     @Volatile
     private var requestUserAgent: String? = null
+
+    /**
+     * Phase 8 G4: host of the CURRENT main frame (main thread only writes it
+     * in onPageStarted). The blob bridge checks it before acting — JS bridges
+     * cannot see the CALLING frame's origin, so the top-frame host is the
+     * practical origin check (blob downloads are only meaningful on luxalgo
+     * pages).
+     */
+    @Volatile
+    private var mainFrameHost: String? = null
 
     /** Hotfix 1.6.1: shown-at-most-once guard for the last-crash dialog. */
     private var crashDialogShown = false
@@ -515,8 +526,25 @@ class MainActivity : ComponentActivity() {
         configureWebView(wv)
         wv.webViewClient = LuxChartWebViewClient()
         wv.webChromeClient = LuxChartWebChromeClient()
+        // Phase 8 G4: JS bridges are exposed ONLY where they are meaningful.
+        // The bridges themselves re-check state/host before acting (below):
+        // LuxBridge acts only while the error page is showing, LuxBlob only
+        // while a luxalgo page is the main frame.
         wv.addJavascriptInterface(ErrorPageBridge(), "LuxBridge")
         wv.addJavascriptInterface(BlobBridge(), "LuxBlob")
+        // Phase 8 G4: document-start injection (androidx.webkit, pinned) —
+        // the canvas CSS lock now applies BEFORE the page's own scripts run,
+        // for luxalgo origins only. The onPageFinished injection below stays
+        // as the fallback (idempotent).
+        try {
+            WebViewCompat.addDocumentStartJavaScript(
+                wv,
+                CANVAS_LOCK_SCRIPT,
+                setOf("https://*.luxalgo.com", "https://luxalgo.com")
+            )
+        } catch (e: Exception) {
+            // older WebView without support — the onPageFinished fallback covers it
+        }
         wv.setDownloadListener { url, ua, disposition, mime, _ ->
             handleDownload(url, ua, disposition, mime)
         }
@@ -621,6 +649,9 @@ class MainActivity : ComponentActivity() {
             // and retry. Internal pages (file://) are never tracked.
             if (url != null && url.startsWith("http")) {
                 currentUrl = url
+                // Phase 8 G4: remember the main-frame host for the blob bridge
+                // origin check (main thread — @Volatile for bridge threads).
+                mainFrameHost = runCatching { java.net.URI(url).host }.getOrNull()
                 // Phase 8 A1 (BUG A): persist on every page start too (the
                 // onPause write alone can miss a swipe-kill between loads).
                 // Only http(s) URLs reach here; restoreAllowed filters the
@@ -778,17 +809,24 @@ class MainActivity : ComponentActivity() {
      * select/paste. A style tag is used instead of inline styles so canvases
      * created later by the SPA are covered too. Idempotent; runs on the main
      * thread (WebView callback context).
+     *
+     * Phase 8 G4: the same script is ALSO injected at document-start for
+     * luxalgo origins via WebViewCompat.addDocumentStartJavaScript (so it
+     * applies before the page's own scripts); this onPageFinished path stays
+     * as the idempotent fallback.
      */
-    private fun injectCanvasCssLock(view: WebView?) {
-        view ?: return
-        val js = "(function(){" +
+    private val canvasLockScript =
+        "(function(){" +
             "if(document.getElementById('luxchart-canvas-lock'))return;" +
             "var s=document.createElement('style');" +
             "s.id='luxchart-canvas-lock';" +
             "s.textContent='canvas{-webkit-user-select:none!important;-webkit-touch-callout:none!important}';" +
             "(document.head||document.documentElement).appendChild(s);" +
             "})()"
-        view.evaluateJavascript(js, null)
+
+    private fun injectCanvasCssLock(view: WebView?) {
+        view ?: return
+        view.evaluateJavascript(canvasLockScript, null)
     }
 
     private inner class LuxChartWebChromeClient : WebChromeClient() {
@@ -816,9 +854,13 @@ class MainActivity : ComponentActivity() {
     }
 
     // JS bridge used by the offline page (feature 4). Kept by ProGuard rules.
+    // Phase 8 G4: both methods act ONLY while the error page is showing —
+    // the bridge belongs to the file:// error document, so a call arriving
+    // while a real page is loaded comes from somewhere else and is ignored.
     private inner class ErrorPageBridge {
         @JavascriptInterface
         fun retry() {
+            if (!errorShowing) return
             runOnUiThread {
                 rootLayout.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
                 retryLoading()
@@ -828,12 +870,36 @@ class MainActivity : ComponentActivity() {
         /** "Clear saved data" control on the error/offline screen (Tier-2). */
         @JavascriptInterface
         fun clearSavedData() {
-            tier2Cache?.clear()
-            // Phase 8 G3: clearing saved data also bumps the cache generation
-            // (spec: generation must be bumped on a manual clear).
-            bumpCacheGeneration("clear saved data")
-            toastInternal(getString(R.string.saved_data_cleared))
+            if (!errorShowing) return
+            // Phase 8 G4: destructive action — confirm in the app first.
+            runOnUiThread { confirmClearSavedData() }
         }
+    }
+
+    /**
+     * Phase 8 G4: native confirmation before Clear-saved-data triggered from
+     * the error page. The deletion + generation bump happen ONLY on confirm;
+     * the page button label is updated afterwards (not optimistically).
+     */
+    private fun confirmClearSavedData() {
+        if (isFinishing) return
+        AlertDialog.Builder(this)
+            .setTitle(R.string.clear_confirm_title)
+            .setMessage(R.string.clear_confirm_message)
+            .setPositiveButton(R.string.clear_confirm_yes) { _, _ ->
+                tier2Cache?.clear()
+                bumpCacheGeneration("clear saved data")
+                toastInternal(getString(R.string.saved_data_cleared))
+                runCatching {
+                    webView.evaluateJavascript(
+                        "(function(){var b=document.getElementById('clear');" +
+                            "if(b)b.textContent='Saved data cleared';})()",
+                        null
+                    )
+                }
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
     }
 
     // ---- Progress bar + splash handoff (feature 8 polish) --------------------
@@ -1317,10 +1383,19 @@ class MainActivity : ComponentActivity() {
     /**
      * JS bridge for blob downloads. Invoked from the page on a WebView-internal
      * thread — never touches the UI directly. Kept by ProGuard rules.
+     * Phase 8 G4: acts ONLY while a luxalgo page is the main frame, and the
+     * page-supplied display name passes Policy.sanitizeBlobFileName (no
+     * separators, no traversal, no control chars, length-capped).
      */
     private inner class BlobBridge {
         @JavascriptInterface
         fun save(name: String?, mime: String?, base64: String) {
+            // Origin check: blob downloads are only meaningful on luxalgo.
+            val host = mainFrameHost
+            if (host == null || !Policy.isLuxAlgo(host)) {
+                toastInternal(R.string.download_failed)
+                return
+            }
             // Tolerate a full data URL being passed instead of bare base64.
             val clean = base64.substringAfterLast(",").trim()
             if (clean.isEmpty() || clean.length > MAX_BLOB_BYTES / 3 * 4 + 4) {
@@ -1337,7 +1412,7 @@ class MainActivity : ComponentActivity() {
                 toastInternal(R.string.download_failed)
                 return
             }
-            val displayName = name?.takeIf { it.isNotBlank() && !it.contains('/') }
+            val displayName = Policy.sanitizeBlobFileName(name)
                 ?: defaultBlobName(mime)
             blobIoExecutor.execute {
                 saveBlobToDisk(PendingBlob(bytes, mime, displayName), publicDir = true)
@@ -1487,6 +1562,16 @@ class MainActivity : ComponentActivity() {
 
         /** Volume-Down ×3 gesture window (Phase 7 item 10). */
         private const val DIAG_GESTURE_WINDOW_MS = 2_000L
+
+        /** Phase 8 G4: document-start canvas-lock script (luxalgo origins). */
+        private val CANVAS_LOCK_SCRIPT =
+            "(function(){" +
+                "if(document.getElementById('luxchart-canvas-lock'))return;" +
+                "var s=document.createElement('style');" +
+                "s.id='luxchart-canvas-lock';" +
+                "s.textContent='canvas{-webkit-user-select:none!important;-webkit-touch-callout:none!important}';" +
+                "(document.head||document.documentElement).appendChild(s);" +
+                "})()"
 
         /** Cap for in-app blob/data saves — avoids OOM on absurd payloads. */
         private const val MAX_BLOB_BYTES = 80 * 1024 * 1024

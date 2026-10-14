@@ -552,6 +552,42 @@ object Policy {
             .joinToString("") { "%02x".format(it) }
     }
 
+    // ---- Blob display-name sanitizing (Phase 8 G4, pure, tested) ---------------
+
+    /** Max length for a page-supplied download file name. */
+    const val BLOB_NAME_MAX_CHARS = 80
+
+    /**
+     * Makes a page-supplied download file name safe (Phase 8 G4): rejects
+     * ANY path separator ('/' or '\'), any ".." traversal sequence, control
+     * characters, hidden (leading-dot) names; collapses whitespace; caps the
+     * length while keeping a short extension. Returns null when nothing safe
+     * remains — the caller then falls back to the generated default name.
+     * The result can NEVER contain directory components.
+     */
+    fun sanitizeBlobFileName(name: String?): String? {
+        if (name.isNullOrBlank()) return null
+        val n = name.trim()
+        if (n.isEmpty()) return null
+        if (n.any { it.isISOControl() }) return null
+        if (n.contains('/') || n.contains('\\')) return null
+        if (n.contains("..")) return null
+        if (n == "." || n.startsWith(".")) return null
+        val collapsed = n.replace(Regex("\\s+"), " ").trim()
+        if (collapsed.isEmpty()) return null
+        var out = collapsed
+        if (out.length > BLOB_NAME_MAX_CHARS) {
+            val ext = out.substringAfterLast('.', "")
+            out = if (ext.isNotEmpty() && ext.length <= 10 && !ext.contains(' ')) {
+                val base = out.substringBeforeLast('.', out)
+                base.take((BLOB_NAME_MAX_CHARS - ext.length - 1).coerceAtLeast(1)) + ".$ext"
+            } else {
+                out.take(BLOB_NAME_MAX_CHARS)
+            }
+        }
+        return out
+    }
+
     // ---- Cache generation (Phase 8 G3, pure, tested) ---------------------------
 
     /**
