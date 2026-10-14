@@ -43,8 +43,19 @@ class Tier2Cache(
     private val cookieHeader: (String) -> String?,
     private val maxBytes: Long = DEFAULT_MAX_BYTES,
     private val maxSingleResponseBytes: Int = DEFAULT_MAX_SINGLE_RESPONSE,
-    private val onLimitReached: (() -> Unit)? = null
+    private val onLimitReached: (() -> Unit)? = null,
+    /**
+     * Phase 8 G3: the per-login CACHE GENERATION. Bumped on logout
+     * detection, session-cookie loss and "Clear saved data". Every cache
+     * key (exact, relaxed, shell) embeds it, so a new login starts a clean
+     * cache namespace while old-generation entries are IGNORED — never
+     * auto-deleted. Provider keeps this class Android-free.
+     */
+    private val cacheGeneration: () -> Int = { 0 }
 ) {
+
+    /** Current generation; provider failures degrade to 0 (never throw). */
+    private fun currentGen(): Int = try { cacheGeneration() } catch (e: Exception) { 0 }
 
     class Diagnostics internal constructor() {
         val hits = AtomicLong()
@@ -255,7 +266,7 @@ class Tier2Cache(
         try {
             if (!Policy.chartLikeRequest(url)) return
             val identity = if (entry.method == "GET") {
-                Policy.cacheKey("GET", url ?: "") ?: ("URL|" + entry.urlForLog)
+                Policy.cacheKey("GET", url ?: "", currentGen()) ?: ("URL|" + entry.urlForLog)
             } else {
                 "URL|" + entry.urlForLog
             }
@@ -351,7 +362,7 @@ class Tier2Cache(
                 // Phase 8 B1: ONLINE serving stays EXACT-KEY only — the
                 // relaxed key is an OFFLINE safety net (latest saved data for
                 // that symbol+timeframe) and never changes online behaviour.
-                val key = Policy.cacheKey(method!!, url)
+                val key = Policy.cacheKey(method!!, url, currentGen())
                 val hit = readFromDisk(method, url)
                 if (hit != null) {
                     diagnostics.cacheFirstHits.incrementAndGet()
@@ -409,7 +420,7 @@ class Tier2Cache(
         userAgent: String?,
         background: Boolean = false
     ): WebResourceResponse? {
-        val key = Policy.cacheKey(method, url) ?: return null
+        val key = Policy.cacheKey(method, url, currentGen()) ?: return null
         val conn = try {
             (URL(url).openConnection() as HttpURLConnection).apply {
                 requestMethod = "GET"
@@ -784,7 +795,7 @@ class Tier2Cache(
      */
     private fun writeRelaxedPointerLocked(url: String, exactKey: String, bodyLength: Int) {
         try {
-            val relaxKey = Policy.relaxedCacheKey("GET", url) ?: return
+            val relaxKey = Policy.relaxedCacheKey("GET", url, currentGen()) ?: return
             val meta = JSONObject()
             meta.put("type", "relaxed")
             meta.put("url", url)
@@ -893,7 +904,7 @@ class Tier2Cache(
      * by its EXACT key. Counts a hit; returns null on any miss/problem.
      */
     private fun readFromDisk(method: String, url: String): DiskHit? {
-        val key = Policy.cacheKey(method, url)
+        val key = Policy.cacheKey(method, url, currentGen())
         synchronized(lock) {
             val hit = key?.let { loadEntryLocked(it) }
             if (hit == null) diagnostics.misses.incrementAndGet()
@@ -911,7 +922,7 @@ class Tier2Cache(
      * never an exception, never a failure count.
      */
     private fun readRelaxedFromDisk(method: String, url: String): DiskHit? {
-        val relaxKey = Policy.relaxedCacheKey(method, url) ?: return null
+        val relaxKey = Policy.relaxedCacheKey(method, url, currentGen()) ?: return null
         synchronized(lock) {
             val pointerFile = File(dir, "$relaxKey.meta")
             if (!pointerFile.exists()) return null
@@ -1256,7 +1267,7 @@ class Tier2Cache(
             lastShellResult = "skipped:ineligible-url"
             return
         }
-        val key = Policy.shellKey(url) ?: run {
+        val key = Policy.shellKey(url, currentGen()) ?: run {
             lastShellResult = "skipped:bad-url"
             return
         }
@@ -1369,7 +1380,7 @@ class Tier2Cache(
         headers: Map<String, List<String>>,
         body: ByteArray
     ) {
-        val key = Policy.shellKey(url) ?: return
+        val key = Policy.shellKey(url, currentGen()) ?: return
         synchronized(lock) {
             if (!dir.exists()) dir.mkdirs()
             val meta = JSONObject()
@@ -1408,7 +1419,7 @@ class Tier2Cache(
 
     /** Loads a stored shell for [url], or null. */
     fun shellFor(url: String): StoredShell? {
-        val key = Policy.shellKey(url) ?: return null
+        val key = Policy.shellKey(url, currentGen()) ?: return null
         synchronized(lock) {
             val bodyFile = File(dir, "$key.bin")
             val metaFile = File(dir, "$key.meta")

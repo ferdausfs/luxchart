@@ -134,6 +134,48 @@ class MainActivity : ComponentActivity() {
      */
     private val statePrefs by lazy { getSharedPreferences(STATE_PREFS, MODE_PRIVATE) }
 
+    /** Reads the per-login cache generation (Phase 8 G3). Never throws. */
+    private fun cacheGeneration(): Int =
+        runCatching { statePrefs.getInt(KEY_CACHE_GEN, 0) }.getOrDefault(0)
+
+    /**
+     * Phase 8 G3: bumps the per-login cache generation. Every cache key
+     * (exact / relaxed / shell) embeds it, so entries of the old generation
+     * become unreachable (IGNORED — never auto-deleted; Clear saved data is
+     * still the only deletion). Triggers: logout navigation, session-cookie
+     * loss and the manual Clear-saved-data control.
+     */
+    private fun bumpCacheGeneration(reason: String) {
+        runCatching {
+            val next = statePrefs.getInt(KEY_CACHE_GEN, 0) + 1
+            statePrefs.edit().putInt(KEY_CACHE_GEN, next).apply()
+            android.util.Log.i("LuxChart", "cache generation -> $next ($reason)")
+        }
+    }
+
+    /**
+     * Phase 8 G3: session-cookie watcher for luxalgo hosts. Remembers when
+     * session cookies exist; when they disappear (logout, expiry, remote
+     * revoke) the cache generation is bumped so the next login starts from
+     * a clean namespace. Best-effort, main thread only.
+     */
+    private fun monitorSessionCookies(url: String) {
+        runCatching {
+            val host = runCatching { java.net.URI(url).host }.getOrNull() ?: return
+            if (!Policy.isLuxAlgo(host)) return
+            val hasCookies = !CookieManager.getInstance().getCookie(url).isNullOrBlank()
+            val had = statePrefs.getBoolean(KEY_HAD_SESSION_COOKIES, false)
+            when {
+                hasCookies && !had ->
+                    statePrefs.edit().putBoolean(KEY_HAD_SESSION_COOKIES, true).apply()
+                !hasCookies && had -> {
+                    statePrefs.edit().putBoolean(KEY_HAD_SESSION_COOKIES, false).apply()
+                    bumpCacheGeneration("session cookies lost")
+                }
+            }
+        }
+    }
+
     /** Phase 7 item 10: Volume-Down press timestamps for the 3-within-2s
      *  diagnostics gesture (works ONLINE and OFFLINE). */
     private val volumeDownTimestamps = ArrayDeque<Long>()
@@ -291,6 +333,7 @@ class MainActivity : ComponentActivity() {
             dir = File(filesDir, "swr-cache/v1"),
             isOnline = { isOnline },
             cookieHeader = { url -> CookieManager.getInstance().getCookie(url) },
+            cacheGeneration = { cacheGeneration() },
             onLimitReached = {
                 runOnUiThread {
                     Toast.makeText(
@@ -583,6 +626,14 @@ class MainActivity : ComponentActivity() {
                 // Only http(s) URLs reach here; restoreAllowed filters the
                 // rest at restore time.
                 runCatching { statePrefs.edit().putString(KEY_LAST_URL, url).apply() }
+                // Phase 8 G3: a logout navigation ends the login-scoped cache
+                // generation; the cookie watcher catches every other way a
+                // session can disappear.
+                if (Policy.isLogoutNavigation(url)) {
+                    bumpCacheGeneration("logout navigation")
+                } else {
+                    monitorSessionCookies(url)
+                }
             }
             // Phase 6 item 4: every new main-frame navigation resets the
             // saved-data marker until the interceptor decides (shell hit or
@@ -778,6 +829,9 @@ class MainActivity : ComponentActivity() {
         @JavascriptInterface
         fun clearSavedData() {
             tier2Cache?.clear()
+            // Phase 8 G3: clearing saved data also bumps the cache generation
+            // (spec: generation must be bumped on a manual clear).
+            bumpCacheGeneration("clear saved data")
             toastInternal(getString(R.string.saved_data_cleared))
         }
     }
@@ -1425,6 +1479,9 @@ class MainActivity : ComponentActivity() {
         /** Phase 8 A1: last-page persistence (cold-start restore, BUG A). */
         private const val STATE_PREFS = "luxchart-state"
         private const val KEY_LAST_URL = "last_url"
+        /** Phase 8 G3: per-login cache generation + session-cookie snapshot. */
+        private const val KEY_CACHE_GEN = "cache_generation"
+        private const val KEY_HAD_SESSION_COOKIES = "had_session_cookies"
         /** Page-visible duration after which a launch counts as successful. */
         private const val CRASH_RESET_AFTER_VISIBLE_MS = 10_000L
 

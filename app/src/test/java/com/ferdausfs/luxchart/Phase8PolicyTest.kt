@@ -262,4 +262,35 @@ class Phase8PolicyTest {
             Policy.staticNeedsRevalidate(null, 0L, Long.MAX_VALUE / 2, ttlMs = 1000)
         )
     }
+
+    // ---- G3: cache generation ----------------------------------------------------
+
+    @Test
+    fun `generation is embedded in every key namespace`() {
+        val url = "https://api.luxalgo.com/v1/candles?symbol=BTC&resolution=5"
+        assertNotEquals(Policy.cacheKey("GET", url, 0), Policy.cacheKey("GET", url, 1))
+        assertNotEquals(Policy.relaxedCacheKey("GET", url, 0), Policy.relaxedCacheKey("GET", url, 1))
+        assertNotEquals(Policy.shellKey(url, 0), Policy.shellKey(url, 1))
+    }
+
+    @Test
+    fun `same generation keeps keys stable across calls`() {
+        val url = "https://vela.luxalgo.com/chart"
+        assertEquals(Policy.cacheKey("GET", url, 7), Policy.cacheKey("GET", url, 7))
+        assertEquals(Policy.shellKey(url, 7), Policy.shellKey(url, 7))
+    }
+
+    @Test
+    fun `logout navigation is detected on the path only`() {
+        assertTrue(Policy.isLogoutNavigation("https://vela.luxalgo.com/logout"))
+        assertTrue(Policy.isLogoutNavigation("https://vela.luxalgo.com/user/signout"))
+        assertTrue(Policy.isLogoutNavigation("https://vela.luxalgo.com/auth/logoff"))
+        assertTrue(Policy.isLogoutNavigation("https://vela.luxalgo.com/SIGN-OUT"))
+        // login is NOT a logout; query strings are never inspected
+        assertFalse(Policy.isLogoutNavigation("https://vela.luxalgo.com/login"))
+        assertFalse(Policy.isLogoutNavigation("https://vela.luxalgo.com/chart?next=/logout"))
+        assertFalse(Policy.isLogoutNavigation("https://logout.example.com/"))
+        assertFalse(Policy.isLogoutNavigation(null))
+        assertFalse(Policy.isLogoutNavigation("::bad::"))
+    }
 }

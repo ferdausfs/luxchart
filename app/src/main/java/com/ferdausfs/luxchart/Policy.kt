@@ -393,12 +393,16 @@ object Policy {
     }
 
     /**
-     * Final cache key: SHA-256 of "METHOD|normalized-url" as a hex string
-     * (filesystem-safe, no separators from the URL survive).
+     * Final cache key: SHA-256 of "METHOD|G<generation>|normalized-url" as a
+     * hex string (filesystem-safe, no separators from the URL survive).
+     * Phase 8 G3: [generation] keys the whole cache to the login state —
+     * bumped on logout/cookie-loss/Clear-saved-data so a new login never
+     * reads the previous login's entries (old entries are ignored, never
+     * auto-deleted). Default 0 keeps the pre-G3 JVM tests valid.
      */
-    fun cacheKey(method: String, url: String): String? {
+    fun cacheKey(method: String, url: String, generation: Int = 0): String? {
         val normalized = normalizeUrl(url) ?: return null
-        return sha256Hex("$method|".uppercase() + normalized)
+        return sha256Hex("$method|".uppercase() + "G$generation|" + normalized)
     }
 
     // ---- Relaxed cache key (Phase 8 B1, pure, tested — BUG B fix) --------------
@@ -454,13 +458,14 @@ object Policy {
     }
 
     /**
-     * Relaxed cache key: SHA-256 of "METHOD|R|relaxed-normalized-url".
-     * The extra "R" namespace keeps relaxed keys disjoint from exact "GET|"
-     * keys and "SHELL|" keys in the same directory. Null when unparseable.
+     * Relaxed cache key: SHA-256 of "METHOD|R|G<generation>|relaxed-
+     * normalized-url". The extra "R" namespace keeps relaxed keys disjoint
+     * from exact "GET|" keys and "SHELL|" keys in the same directory.
+     * Generation scoped like [cacheKey]. Null when unparseable.
      */
-    fun relaxedCacheKey(method: String, url: String): String? {
+    fun relaxedCacheKey(method: String, url: String, generation: Int = 0): String? {
         val normalized = relaxedNormalizeUrl(url) ?: return null
-        return sha256Hex("$method|R|".uppercase() + normalized)
+        return sha256Hex("$method|R|".uppercase() + "G$generation|" + normalized)
     }
 
     // ---- Cloudflare challenge skip (Phase 8 G1, pure, tested) ------------------
@@ -545,6 +550,33 @@ object Policy {
         val digest = java.security.MessageDigest.getInstance("SHA-256")
         return digest.digest(input.toByteArray(Charsets.UTF_8))
             .joinToString("") { "%02x".format(it) }
+    }
+
+    // ---- Cache generation (Phase 8 G3, pure, tested) ---------------------------
+
+    /**
+     * PATH segments that mean LOG-OUT. A main-frame navigation to any of
+     * these bumps the per-login cache generation (the session is ending, so
+     * saved data must not leak into the next login). Distinct from the
+     * broader [SENSITIVE_PATH_SEGMENTS] cache-skip list: "login" does not
+     * end a session.
+     */
+    val LOGOUT_PATH_SEGMENTS = listOf("logout", "logoff", "signout", "sign-out")
+
+    /**
+     * TRUE => this URL is a logout navigation ([LOGOUT_PATH_SEGMENTS] on the
+     * PATH only — never host, never query; unparseable => false).
+     */
+    fun isLogoutNavigation(url: String?): Boolean {
+        if (url.isNullOrBlank()) return false
+        return try {
+            val path = java.net.URI(url.trim()).rawPath ?: return false
+            path.split('/')
+                .map { it.trim().lowercase() }
+                .any { it.isNotEmpty() && it in LOGOUT_PATH_SEGMENTS }
+        } catch (e: Exception) {
+            false
+        }
     }
 
     // ---- Last-URL restore decision (Phase 8 A1, pure, tested) -----------------
@@ -651,14 +683,15 @@ object Policy {
     }
 
     /**
-     * Shell cache key: "SHELL|" namespace + [normalizeUrl]. The normalized
-     * URL has no fragment (and a sorted query), so /chart#pane and /chart
-     * share one shell entry while staying fully disjoint from the Tier-2
-     * "GET|" keys in the same directory.
+     * Shell cache key: "SHELL|G<generation>|" namespace + [normalizeUrl].
+     * The normalized URL has no fragment (and a sorted query), so /chart#pane
+     * and /chart share one shell entry while staying fully disjoint from the
+     * Tier-2 "GET|" keys in the same directory. Generation scoped per login
+     * (Phase 8 G3).
      */
-    fun shellKey(url: String?): String? {
+    fun shellKey(url: String?, generation: Int = 0): String? {
         val normalized = normalizeUrl(url) ?: return null
-        return sha256Hex("SHELL|" + normalized)
+        return sha256Hex("SHELL|G$generation|" + normalized)
     }
 
     /**
