@@ -270,9 +270,25 @@ object Policy {
         currentBytes + incomingBytes <= capBytes
 
     /**
+     * Query parameters IGNORED when building the cache key (Phase 7 item 6):
+     * cache-busters, timestamps and nonces injected by the page or the API.
+     * Matching is on the raw parameter NAME before the '=', case-insensitive.
+     * ALL other parameters are kept (symbol, resolution, from, to, type, …)
+     * and the surviving pairs are sorted for a stable key. Lives here (pure)
+     * and is unit-tested — change together with Phase7PolicyTest.
+     */
+    val NOISY_QUERY_PARAMS = listOf(
+        "_", "t", "ts", "_t", "timestamp", "cb", "cachebust", "nocache",
+        "rnd", "random"
+    )
+
+    private val NOISY_PARAM_SET = NOISY_QUERY_PARAMS.toSet()
+
+    /**
      * Cache-key normalization: lower-case scheme+host, drop the fragment,
-     * drop the default port (80/443), drop an empty query separator, and
-     * sort query parameters for a stable key. Path case is preserved.
+     * drop the default port (80/443), drop an empty query separator, drop
+     * [NOISY_QUERY_PARAMS] from the query, and sort the surviving query
+     * parameters for a stable key. Path case is preserved.
      * Returns null when the URL cannot be parsed (=> do not cache).
      */
     fun normalizeUrl(url: String?): String? {
@@ -287,6 +303,10 @@ object Policy {
             val query = uri.rawQuery
                 ?.split('&')
                 ?.filter { it.isNotEmpty() }
+                ?.filter { pair ->
+                    val key = pair.substringBefore('=', "").trim().lowercase()
+                    key !in NOISY_PARAM_SET
+                }
                 ?.sorted()
                 ?.joinToString("&")
                 ?.takeIf { it.isNotEmpty() }
