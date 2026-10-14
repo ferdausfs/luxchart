@@ -47,7 +47,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 import java.net.URLEncoder
 
 /**
- * LuxChart — single-Activity WebView shell for https://www.luxalgo.com/
+ * LuxChart — single-Activity WebView shell for https://vela.luxalgo.com/chart
  *
  * Implemented features (Session 2):
  *  1. Persistent login: cookies (incl. third-party for OAuth) + flush on pause
@@ -570,7 +570,12 @@ class MainActivity : ComponentActivity() {
         (value * resources.displayMetrics.density).toInt()
 
     companion object {
-        private const val START_URL = "https://www.luxalgo.com/"
+        /**
+         * The one and only start URL: opened on first launch, on error-retry
+         * and on any WebView re-creation. Navigation allow-list still covers
+         * it (vela.luxalgo.com is a luxalgo.com subdomain).
+         */
+        const val START_URL = "https://vela.luxalgo.com/chart"
         private const val KEY_ERROR_SHOWING = "lux.errorShowing"
         private const val KEY_ERROR_URL = "lux.errorUrl"
 
