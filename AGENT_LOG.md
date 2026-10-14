@@ -10,6 +10,30 @@ secret values in this file. Secret *names* and file *names* are allowed.
 
 ---
 
+## Phase 4 — 2026-10-14 — Offline Tier 1 (versionName 1.5.0)
+
+- **Agent/Tool:** GLM (Super Z CLI) acting as senior Android engineer
+- **Feature:** Phase 4 — offline Tier 1 (items 9–11, owner mandate)
+- **What changed:** WebView `cacheMode` now switches dynamically via the
+  ConnectivityManager callback: online `LOAD_DEFAULT`, offline
+  `LOAD_CACHE_ELSE_NETWORK`; evaluated at app start BEFORE the first load
+  (`reevaluateOnlineState()` checks INTERNET+VALIDATED on the active network)
+  and applied to every WebView instance (incl. recreation). NetworkCallback
+  extended with `onLost`/`onCapabilitiesChanged`. DOM storage + IndexedDB
+  stay on; Service Workers deliberately NOT blocked. Non-blocking banner
+  "Offline: showing saved data" (amber on slate, full-width, not clickable —
+  touches pass through to the charts) shown/hidden on transitions. The error
+  page appears only when nothing is saved for the page (emerges naturally:
+  no cache → main-frame error). versionName 1.5.0.
+- **Touched files:** `MainActivity.kt`, `strings.xml`, `app/build.gradle.kts`
+- **Commit hashes:** `ceb9f7f` (items 9+10), `9f45ccb` (item 11)
+- **Build:** CI run #16 — GREEN, artifact
+  `LuxChart-release-apk-16`: https://github.com/ferdausfs/luxchart/actions/runs/38516036914
+- **Pending items:** Tier 2 (next phase) covers what the WebView cache cannot.
+- **Notes for next agent:** `setOnlineState()` is the single place where
+  online/offline transitions are applied — hook anything new there.
+---
+
 ## Phase 3 — 2026-10-14 — blob:/data: downloads (versionName 1.4.0)
 
 - **Agent/Tool:** GLM (Super Z CLI) acting as senior Android engineer
