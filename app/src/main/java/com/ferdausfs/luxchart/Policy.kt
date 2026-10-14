@@ -119,15 +119,23 @@ object Policy {
     )
 
     /**
-     * Content-type prefixes eligible for the offline disk cache. This is the
-     * mandated set (JSON/JS/CSS/fonts/images) PLUS text/html for luxalgo pages
-     * so the app shell itself can be shown offline (documented deviation that
-     * makes the whole offline feature actually work end to end).
+     * Content-type prefixes eligible for the offline disk cache. The mandated
+     * set (JSON/JS/CSS/fonts/images) PLUS text/html for luxalgo pages so the
+     * app shell itself can be shown offline (Phase 6), PLUS the Phase 7 item
+     * 5 additions: text/plain, application/octet-stream, application/wasm,
+     * application/x-protobuf, application/msgpack, application/x-ndjson
+     * (image/svg+xml is covered by the image/ prefix).
      */
     private val STORABLE_TYPES = listOf(
         "application/json",
+        "application/x-ndjson",
+        "application/msgpack",
+        "application/x-protobuf",
+        "application/octet-stream",
+        "application/wasm",
         "text/javascript", "application/javascript", "application/x-javascript",
         "text/css",
+        "text/plain",
         "font/", "application/font-woff", "application/vnd.ms-fontobject",
         "application/x-font-ttf", "application/x-font-opentype",
         "image/",
@@ -202,15 +210,19 @@ object Policy {
     }
 
     /**
-     * Response-level store rules: only 200s without Set-Cookie, non-streaming,
-     * with a storable content type. TRUE means eligible to save to disk.
+     * Response-level store rules (Phase 7 item 5): only 200s; non-streaming;
+     * with a storable content type. Responses WITH Set-Cookie ARE storable —
+     * the cookie header is stripped from the persisted meta automatically
+     * (only SAFE_RESPONSE_HEADERS reach disk) while the cookies themselves
+     * are applied to the CookieManager when the response is fetched online.
+     * Never stored: non-GET (request-level), 3xx, non-200,
+     * text/event-stream, gRPC (STREAMING_TYPES).
      */
     fun shouldStoreResponse(
         statusCode: Int,
         responseHeaders: Map<String, List<String>>
     ): Boolean {
         if (statusCode != 200) return false
-        if (responseHeaders.keys.any { it.equals("Set-Cookie", ignoreCase = true) }) return false
         val contentType = responseHeaders.entries
             .firstOrNull { it.key.equals("Content-Type", ignoreCase = true) }
             ?.value?.firstOrNull()?.lowercase() ?: return false

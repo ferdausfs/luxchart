@@ -233,12 +233,14 @@ class PolicyTest {
     }
 
     @Test
-    fun `response store rules`() {
+    fun `response store rules (Phase 7 item 5)`() {
         val ok = mapOf("Content-Type" to listOf("application/json; charset=utf-8"))
         assertTrue(Policy.shouldStoreResponse(200, ok))
         assertFalse(Policy.shouldStoreResponse(204, ok))
         assertFalse(Policy.shouldStoreResponse(301, ok))
+        assertFalse(Policy.shouldStoreResponse(302, ok))
         assertFalse(Policy.shouldStoreResponse(404, ok))
+        assertFalse(Policy.shouldStoreResponse(500, ok))
         assertTrue(
             Policy.shouldStoreResponse(200, mapOf("content-type" to listOf("text/css")))
         )
@@ -248,7 +250,9 @@ class PolicyTest {
         assertTrue(
             Policy.shouldStoreResponse(200, mapOf("Content-Type" to listOf("text/html")))
         )
-        assertFalse(
+        // Phase 7 item 5: Set-Cookie responses ARE storable (cookie stripped
+        // from persisted meta, still applied to CookieManager when fetched).
+        assertTrue(
             Policy.shouldStoreResponse(
                 200, mapOf("Content-Type" to listOf("application/json"), "Set-Cookie" to listOf("sid=1"))
             )
@@ -260,9 +264,29 @@ class PolicyTest {
         )
         assertFalse(
             Policy.shouldStoreResponse(
-                200, mapOf("Content-Type" to listOf("application/octet-stream"))
+                200, mapOf("Content-Type" to listOf("application/grpc"))
             )
         )
+        assertFalse(
+            Policy.shouldStoreResponse(
+                200, mapOf("Content-Type" to listOf("application/grpc-web+proto"))
+            )
+        )
+        // Phase 7 item 5: newly storable types
+        listOf(
+            "text/plain",
+            "application/octet-stream",
+            "application/wasm",
+            "application/x-protobuf",
+            "application/msgpack",
+            "application/x-ndjson",
+            "image/svg+xml"
+        ).forEach {
+            assertTrue(
+                it,
+                Policy.shouldStoreResponse(200, mapOf("Content-Type" to listOf(it)))
+            )
+        }
         assertFalse(Policy.shouldStoreResponse(200, emptyMap()))
     }
 
