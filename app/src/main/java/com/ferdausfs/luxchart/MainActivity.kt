@@ -10,6 +10,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.graphics.Bitmap
+import android.graphics.ColorDrawable
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
@@ -22,6 +23,7 @@ import android.provider.MediaStore
 import android.provider.Settings
 import android.util.Base64
 import android.view.HapticFeedbackConstants
+import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
@@ -39,6 +41,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import android.widget.ProgressBar
+import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
@@ -93,6 +96,9 @@ class MainActivity : ComponentActivity() {
     private var networkCallbackRegistered = false
     private var renderCrashCount = 0
 
+    /** Online state — drives WebView cache mode + the offline banner. */
+    private var isOnline = true
+
     /** Last real (http/https) page URL — kept current in onPageStarted. */
     private var currentUrl: String = START_URL
 
@@ -146,7 +152,26 @@ class MainActivity : ComponentActivity() {
 
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
-            runOnUiThread { if (errorShowing) retryLoading() }
+            runOnUiThread {
+                setOnlineState(true)
+                if (errorShowing) retryLoading()
+            }
+        }
+
+        override fun onLost(network: Network) {
+            runOnUiThread { reevaluateOnlineState() }
+        }
+
+        override fun onCapabilitiesChanged(
+            network: Network,
+            capabilities: NetworkCapabilities
+        ) {
+            val online = capabilities.hasCapability(
+                NetworkCapabilities.NET_CAPABILITY_INTERNET
+            ) && capabilities.hasCapability(
+                NetworkCapabilities.NET_CAPABILITY_VALIDATED
+            )
+            runOnUiThread { setOnlineState(online) }
         }
     }
 
@@ -195,6 +220,11 @@ class MainActivity : ComponentActivity() {
             // funnel through the same single START/current URL.
             webView.loadUrl(currentUrl)
         }
+
+        // Set the offline/online cache mode correctly BEFORE the first load
+        // (Tier-1 offline), so an app started in airplane mode immediately
+        // serves whatever the WebView has saved.
+        reevaluateOnlineState()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -341,6 +371,15 @@ class MainActivity : ComponentActivity() {
             databaseEnabled = true
             useWideViewPort = true
             loadWithOverviewMode = true
+            // Tier-1 offline: online = normal HTTP cache, offline = serve
+            // whatever the WebView has saved for this page (chart data,
+            // assets, DOM). DOM storage + IndexedDB stay ON (above); Service
+            // Workers are left at WebView defaults — deliberately NOT blocked.
+            cacheMode = if (isOnline) {
+                WebSettings.LOAD_DEFAULT
+            } else {
+                WebSettings.LOAD_CACHE_ELSE_NETWORK
+            }
             // Desktop mode with the device's REAL WebView Chrome major version
             // (pure builder in Policy.kt, unit-tested) — never a hardcoded UA.
             userAgentString = Policy.desktopUa(WebSettings.getDefaultUserAgent(this@MainActivity))
@@ -599,6 +638,48 @@ class MainActivity : ComponentActivity() {
             // ignore — already unregistered
         }
         networkCallbackRegistered = false
+    }
+
+    // ---- Tier-1 offline: dynamic cache mode (feature: offline) ----------------
+
+    /**
+     * Queries the current default network and applies the resulting state.
+     * Called at app start and whenever a network is lost. Main thread only.
+     */
+    private fun reevaluateOnlineState() {
+        val online = try {
+            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val caps = cm.getNetworkCapabilities(cm.activeNetwork)
+            caps != null &&
+                caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+        } catch (e: Exception) {
+            // If we cannot know, assume online and let the error page handle it.
+            true
+        }
+        setOnlineState(online)
+    }
+
+    /** Applies an online/offline transition: cache mode + banner (Tier-2 hooks later). */
+    private fun setOnlineState(online: Boolean) {
+        if (isOnline == online) return
+        isOnline = online
+        applyCacheMode()
+        updateOfflineBanner()
+    }
+
+    private fun applyCacheMode() {
+        if (::webView.isInitialized) {
+            webView.settings.cacheMode = if (isOnline) {
+                WebSettings.LOAD_DEFAULT
+            } else {
+                WebSettings.LOAD_CACHE_ELSE_NETWORK
+            }
+        }
+    }
+
+    private fun updateOfflineBanner() {
+        // Banner arrives in the next commit; state application is harmless now.
     }
 
     // ---- Allow-list + external browser ---------------------------------------
