@@ -391,12 +391,19 @@ class Tier2Cache(
     private fun totalBytesLocked(): Long =
         dir.listFiles()?.filter { it.isFile && it.name.endsWith(".bin") }?.sumOf { it.length() } ?: 0L
 
-    /** "Clear saved data" — deletes every cached entry. Safe from any thread. */
+    /**
+     * "Clear saved data" — deletes every cached entry (Tier-2 resources AND
+     * main-page shells, same directory) and resets the shell shadow-fetch
+     * throttle so the next online page load re-fetches a fresh shell.
+     * Safe from any thread.
+     */
     fun clear() {
         synchronized(lock) {
             dir.listFiles()?.forEach { it.delete() }
             diagnostics.diskBytes.set(0)
         }
+        shellThrottle.clear()
+        lastShellResult = "(cleared saved data)"
     }
 
     // ---- Main-page shell (Phase 6) ---------------------------------------------
@@ -547,7 +554,17 @@ class Tier2Cache(
         return out.toByteArray()
     }
 
-    /** Persists a shell entry (safe headers only) under the "SHELL|" namespace. */
+    /**
+     * Persists a shell entry (safe headers only) under the "SHELL|" namespace.
+     * Storage contract (Phase 6 item 3):
+     *  - SAME app-private versioned dir + LRU + 500 MB cap as Tier-2 entries;
+     *    only the KEY namespace differs (Policy.shellKey), so eviction and
+     *    "clear saved data" cover shells with zero extra machinery.
+     *  - key = SHA-256("SHELL|" + normalized URL); the normalized URL keeps
+     *    its (sorted) query but drops the fragment, so /chart#x == /chart.
+     *  - NEVER persisted: Set-Cookie / Cookie / Authorization (or any request
+     *    header at all) — only the SAFE_RESPONSE_HEADERS response subset.
+     */
     private fun storeShell(
         url: String,
         status: Int,
@@ -567,6 +584,12 @@ class Tier2Cache(
             if (contentType != null) meta.put("content-type", contentType)
             val safe = JSONObject()
             headers.forEach { (name, values) ->
+                // Defensive: sensitive header names can never slip into the
+                // persisted meta, independent of SAFE_RESPONSE_HEADERS.
+                if (name.equals("Set-Cookie", true) ||
+                    name.equals("Cookie", true) ||
+                    name.equals("Authorization", true)
+                ) return@forEach
                 if (SAFE_RESPONSE_HEADERS.any { it.equals(name, true) } && values.isNotEmpty()) {
                     safe.put(name, values.joinToString(", "))
                 }
