@@ -10,6 +10,33 @@ secret values in this file. Secret *names* and file *names* are allowed.
 
 ---
 
+## Phase 3 — 2026-10-14 — blob:/data: downloads (versionName 1.4.0)
+
+- **Agent/Tool:** GLM (Super Z CLI) acting as senior Android engineer
+- **Feature:** Phase 3 — in-app downloads for blob:/data: (item 8, owner mandate)
+- **What changed:** DownloadManager kept for http(s). `blob:` URLs are now
+  fetched in-page: injected JS does `fetch(blobUrl) -> FileReader.readAsDataURL
+  -> window.LuxBlob.save(name, mime, base64)`; the new `BlobBridge`
+  (@JavascriptInterface, ProGuard keep added) decodes (android.util.Base64)
+  on a single background executor and saves via MediaStore Downloads on
+  API 29+ / legacy public Downloads below (permission flow reused; app-private
+  fallback when denied). `data:` URLs are parsed by the new pure
+  `Policy.dataUrlParts` (tested) and saved directly. Filenames:
+  `luxchart-<ts>.<ext>` from a mime→ext map, `name (2).ext` de-dup on legacy
+  paths. 80 MB cap (OOM guard). Toasts: `blob_saved` / `blob_failed`.
+  versionName 1.4.0.
+- **Touched files:** `MainActivity.kt`, `Policy.kt`, `PolicyTest.kt`,
+  `proguard-rules.pro`, `strings.xml`, `README.md`, `app/build.gradle.kts`
+- **Commit hashes:** `0493888`
+- **Build:** CI run #14 — GREEN, artifact
+  `LuxChart-release-apk-14`: https://github.com/ferdausfs/luxchart/actions/runs/38515720630
+- **Pending items:** none for this phase
+- **Notes for next agent:** every NEW JS bridge needs (a) registration inside
+  `setupWebView()` and (b) an explicit `-keep class ...$BridgeName { *; }`
+  rule. Bridge methods must never touch the UI directly — use
+  `toastInternal()` / `runOnUiThread`.
+---
+
 ## Phase 2 — 2026-10-14 — Login + compatibility (versionName 1.3.0)
 
 - **Agent/Tool:** GLM (Super Z CLI) acting as senior Android engineer
