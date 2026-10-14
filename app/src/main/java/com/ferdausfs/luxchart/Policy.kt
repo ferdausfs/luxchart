@@ -224,6 +224,31 @@ object Policy {
             .joinToString("") { "%02x".format(it) }
     }
 
+    // ---- Crash-report sanitization (hotfix 1.6.1 item 4, pure, tested) -------
+
+    /** Upper bound for the persisted crash text (keeps the dialog light). */
+    const val CRASH_TEXT_MAX_CHARS = 20_000
+
+    private val CRASH_URL_REGEX = Regex("https?://\\S+")
+    private val CRASH_COOKIE_REGEX = Regex("(?i)((set-)?cookie\\s*[:=])[^\\n\\r]*")
+
+    /**
+     * Makes a crash stack trace safe to store and show (secret-free):
+     * every http(s) URL loses its query string (tokens/session ids live
+     * there) and any `Cookie:`/`Set-Cookie:`-looking assignment is redacted
+     * for the rest of its line. Stack frames, thread names and messages pass
+     * through untouched. Output is hard-capped at [maxChars].
+     */
+    fun sanitizeCrashText(text: String, maxChars: Int = CRASH_TEXT_MAX_CHARS): String {
+        val noQuery = CRASH_URL_REGEX.replace(text) { m -> m.value.substringBefore('?') }
+        val noCookies = CRASH_COOKIE_REGEX.replace(noQuery, "$1 <redacted>")
+        return if (noCookies.length > maxChars) {
+            noCookies.take(maxChars) + "\n… (truncated)"
+        } else {
+            noCookies
+        }
+    }
+
     /**
      * Desktop user-agent built at runtime from the system WebView UA.
      *

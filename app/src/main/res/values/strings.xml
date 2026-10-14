@@ -12,4 +12,5 @@
     <string name="diag_copy">Copy</string>
     <string name="diag_share">Share</string>
     <string name="diag_close">Close</string>
+    <string name="crash_dialog_title">Last crash report</string>
 </resources>

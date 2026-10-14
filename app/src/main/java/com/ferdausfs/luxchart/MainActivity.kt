@@ -122,6 +122,9 @@ class MainActivity : ComponentActivity() {
     @Volatile
     private var requestUserAgent: String? = null
 
+    /** Hotfix 1.6.1: shown-at-most-once guard for the last-crash dialog. */
+    private var crashDialogShown = false
+
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
     private var pendingDownload: PendingDownload? = null
     private var pendingBlob: PendingBlob? = null
@@ -211,6 +214,11 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         val splashScreen = installSplashScreen()
+        // Hotfix 1.6.1 item 4: capture ANY uncaught crash to a local file so
+        // the user can share it from the next launch (no logcat needed).
+        // Installed before anything else can throw; always delegates to the
+        // platform handler afterwards so the system crash flow is unchanged.
+        installCrashFileHandler()
         super.onCreate(savedInstanceState)
 
         // Respect the system reduced-motion setting for all in-app animations.
@@ -237,6 +245,11 @@ class MainActivity : ComponentActivity() {
         setContentView(rootLayout)
         applyEdgeToEdgeAndInsets()
         onBackPressedDispatcher.addCallback(this, backCallback)
+
+        // Hotfix 1.6.1 item 4: surface the previous run's saved crash even if
+        // the page never paints (revealContent is the normal trigger; this
+        // fallback covers error-page and slow-load cases).
+        rootLayout.postDelayed({ maybeShowLastCrashDialog() }, CRASH_DIALOG_FALLBACK_MS)
 
         if (savedInstanceState != null) {
             errorShowing = savedInstanceState.getBoolean(KEY_ERROR_SHOWING, false)
@@ -678,12 +691,84 @@ class MainActivity : ComponentActivity() {
     private fun revealContent() {
         if (contentRevealed) return
         contentRevealed = true
+        // Hotfix 1.6.1 item 4: page painted (or the error page took over) —
+        // safe moment to surface a saved crash report.
+        rootLayout.post { maybeShowLastCrashDialog() }
         if (reducedMotion) {
             rootLayout.alpha = 1f
             return
         }
         rootLayout.alpha = 0f
         rootLayout.animate().alpha(1f).setDuration(220).withEndAction(null).start()
+    }
+
+    // ---- Crash reporting (hotfix 1.6.1 item 4) --------------------------------
+
+    /**
+     * Writes the crashing thread + sanitized stack trace to
+     * filesDir/last-crash.txt, then chains to the previous handler (the
+     * platform crash dialog/ANR flow stays intact). Secret-free by policy:
+     * Policy.sanitizeCrashText strips URL query strings and cookie values.
+     */
+    private fun installCrashFileHandler() {
+        val previous = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            runCatching {
+                val time = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
+                val sw = java.io.StringWriter()
+                throwable.printStackTrace(java.io.PrintWriter(sw))
+                val text = "time: $time\nthread: ${thread.name}\n$sw"
+                File(filesDir, LAST_CRASH_FILE).writeText(Policy.sanitizeCrashText(text))
+            }
+            // Never swallow the crash.
+            previous?.uncaughtException(thread, throwable)
+        }
+    }
+
+    /**
+     * If the previous run crashed, show the saved trace in a Copy / Share /
+     * Close dialog and delete the file on dismiss. Main thread only.
+     */
+    private fun maybeShowLastCrashDialog() {
+        if (crashDialogShown || isFinishing) return
+        val file = File(filesDir, LAST_CRASH_FILE)
+        if (!file.exists()) return
+        val trace = runCatching { file.readText() }.getOrNull()
+        if (trace.isNullOrBlank()) {
+            file.delete()
+            return
+        }
+        crashDialogShown = true
+        val body = TextView(this).apply {
+            text = trace
+            textSize = 11f
+            typeface = Typeface.MONOSPACE
+            setTextColor(0xFFCBD5E1.toInt())
+            setTextIsSelectable(true)
+            setPadding(dp(20), dp(14), dp(20), dp(4))
+        }
+        val scroll = ScrollView(this).apply { addView(body) }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.crash_dialog_title)
+            .setView(scroll)
+            .setPositiveButton(R.string.diag_copy) { _, _ ->
+                val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                cm.setPrimaryClip(ClipData.newPlainText("LuxChart last crash", trace))
+                Toast.makeText(this, R.string.diag_copied, Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton(R.string.diag_share) { _, _ ->
+                val send = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_TEXT, trace)
+                    putExtra(Intent.EXTRA_TITLE, getString(R.string.crash_dialog_title))
+                }
+                runCatching {
+                    startActivity(Intent.createChooser(send, getString(R.string.diag_share)))
+                }
+            }
+            .setNeutralButton(R.string.diag_close, null)
+            .setOnDismissListener { file.delete() }
+            .show()
     }
 
     // ---- Offline / error page (feature 4) ------------------------------------
@@ -1105,6 +1190,11 @@ class MainActivity : ComponentActivity() {
         private const val KEY_ERROR_URL = "lux.errorUrl"
         private const val KEY_CURRENT_URL = "lux.currentUrl"
         private const val MAX_RENDER_CRASHES = 3
+
+        /** Saved-crash file name inside filesDir (hotfix 1.6.1). */
+        private const val LAST_CRASH_FILE = "last-crash.txt"
+        /** Fallback for showing the saved-crash dialog if no page paints. */
+        private const val CRASH_DIALOG_FALLBACK_MS = 4_000L
 
         /** Cap for in-app blob/data saves — avoids OOM on absurd payloads. */
         private const val MAX_BLOB_BYTES = 80 * 1024 * 1024
