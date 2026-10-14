@@ -579,10 +579,14 @@ class MainActivity : ComponentActivity() {
 
     // ---- Allow-list + external browser ---------------------------------------
 
-    private fun isAllowed(host: String): Boolean =
-        ALLOWED_DOMAINS.any { d -> host == d || host.endsWith(".$d") }
+    private fun isAllowed(host: String): Boolean = Policy.isAllowed(host)
 
     private fun openExternal(url: String): Boolean {
+        // Short, honest feedback about WHY we are leaving the app.
+        val host = runCatching { Uri.parse(url).host }.getOrNull()
+        val what = host ?: url.take(60)
+        Toast.makeText(this, getString(R.string.opening_external, what), Toast.LENGTH_SHORT)
+            .show()
         return try {
             startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
             true
@@ -669,15 +673,6 @@ class MainActivity : ComponentActivity() {
         private const val KEY_ERROR_URL = "lux.errorUrl"
         private const val KEY_CURRENT_URL = "lux.currentUrl"
         private const val MAX_RENDER_CRASHES = 3
-
-        /** Hosts (exact match or any subdomain) that stay inside the WebView.
-         *  (Moves to Policy.kt as the single source of truth in the next commit.) */
-        private val ALLOWED_DOMAINS = listOf(
-            "luxalgo.com",
-            "accounts.google.com",
-            "appleid.apple.com",
-            "facebook.com"
-        )
 
         private val BG_COLOR = 0xFF0A0E14.toInt()
         private val ACCENT_COLOR = 0xFF2DD4BF.toInt()

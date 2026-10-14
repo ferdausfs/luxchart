@@ -52,4 +52,62 @@ class PolicyTest {
             assertTrue(out.endsWith("Safari/537.36"))
         }
     }
+
+    // ---- Navigation allow-list ----------------------------------------------
+
+    @Test
+    fun `luxalgo com and all subdomains are allowed`() {
+        listOf(
+            "luxalgo.com", "www.luxalgo.com", "vela.luxalgo.com",
+            "api.luxalgo.com", "a.b.c.luxalgo.com"
+        ).forEach { assertTrue(it, Policy.isAllowed(it)) }
+    }
+
+    @Test
+    fun `lookalike hosts are rejected`() {
+        listOf(
+            "notluxalgo.com", "luxalgo.com.evil.io", "luxalgo.community",
+            "luxalgo", "", "   ", "::1", "127.0.0.1:443"
+        ).forEach { assertFalse(it, Policy.isAllowed(it)) }
+    }
+
+    @Test
+    fun `allow-list is case and whitespace insensitive`() {
+        assertTrue(Policy.isAllowed("WWW.LUXALGO.COM"))
+        assertTrue(Policy.isAllowed(" Vela.LuxAlgo.com "))
+    }
+
+    @Test
+    fun `oauth and payment hosts are allowed including subdomains`() {
+        listOf(
+            "accounts.google.com", "sub.accounts.google.com",
+            "appleid.apple.com",
+            "facebook.com", "www.facebook.com", "m.facebook.com",
+            "accounts.youtube.com",
+            "discord.com", "cdn.discord.com",
+            "login.microsoftonline.com",
+            "checkout.stripe.com", "js.stripe.com",
+            "paypal.com", "www.paypal.com",
+            "challenges.cloudflare.com"
+        ).forEach { assertTrue(it, Policy.isAllowed(it)) }
+    }
+
+    @Test
+    fun `sibling hosts outside the list are rejected`() {
+        listOf(
+            "google.com", "youtube.com", "microsoftonline.com", "stripe.com",
+            "cloudflare.com", "apple.com", "evil-accounts.google.com.evil.io"
+        ).forEach { assertFalse(it, Policy.isAllowed(it)) }
+    }
+
+    @Test
+    fun `isLuxAlgo matches only luxalgo family`() {
+        assertTrue(Policy.isLuxAlgo("luxalgo.com"))
+        assertTrue(Policy.isLuxAlgo("vela.luxalgo.com"))
+        assertTrue(Policy.isLuxAlgo("Vela.LuxAlgo.com"))
+        assertFalse(Policy.isLuxAlgo("accounts.google.com"))
+        assertFalse(Policy.isLuxAlgo("velaluxalgo.com"))
+        assertFalse(Policy.isLuxAlgo("luxalgo.com.evil.io"))
+        assertFalse(Policy.isLuxAlgo(null))
+    }
 }

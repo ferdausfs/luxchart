@@ -5,9 +5,56 @@ package com.ferdausfs.luxchart
  *
  * RULES for this file:
  *  - NO Android imports (must run in plain JVM unit tests).
- *  - Navigation allow-list will join this file as the single source of truth.
+ *  - Navigation allow-list lives ONLY here (single source of truth).
  */
 object Policy {
+
+    /**
+     * Hosts (exact match or any subdomain) that stay inside the WebView.
+     * Everything else is handed to the external browser.
+     * SINGLE SOURCE OF TRUTH for navigation — MainActivity must not keep its
+     * own copy of this list.
+     */
+    val ALLOWED_HOSTS = listOf(
+        "luxalgo.com",               // chart platform: vela./www./api. …
+        "accounts.google.com",       // Google sign-in
+        "appleid.apple.com",         // Apple sign-in
+        "facebook.com",              // Facebook sign-in
+        "accounts.youtube.com",      // Google/YouTube OAuth flow
+        "discord.com",               // Discord sign-in
+        "login.microsoftonline.com", // Microsoft sign-in
+        "checkout.stripe.com",       // Stripe checkout
+        "js.stripe.com",             // Stripe JS
+        "paypal.com",                // PayPal
+        "challenges.cloudflare.com"  // bot-protection challenge page
+    )
+
+    /**
+     * True when [host] is one of [ALLOWED_HOSTS] or a subdomain of one.
+     * Pure function: null/blank/host-with-port/IPv6 => false; case- and
+     * whitespace-insensitive; lookalikes (notluxalgo.com, luxalgo.com.evil.io)
+     * are rejected.
+     */
+    fun isAllowed(host: String?): Boolean {
+        val h = normalizeHost(host) ?: return false
+        return ALLOWED_HOSTS.any { d -> h == d || h.endsWith(".$d") }
+    }
+
+    /**
+     * True only for luxalgo.com and its subdomains — used by the offline
+     * Tier-2 cache, which must never touch third-party hosts.
+     */
+    fun isLuxAlgo(host: String?): Boolean {
+        val h = normalizeHost(host) ?: return false
+        return h == "luxalgo.com" || h.endsWith(".luxalgo.com")
+    }
+
+    private fun normalizeHost(host: String?): String? {
+        if (host.isNullOrBlank()) return null
+        val h = host.trim().lowercase()
+        if (h.contains(":")) return null // host:port or bare IPv6 — not a plain DNS host
+        return h
+    }
 
     /**
      * Desktop user-agent built at runtime from the system WebView UA.

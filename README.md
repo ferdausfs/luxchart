@@ -32,7 +32,12 @@ Personal use only.
 
 ## Allow-list (stays inside the WebView)
 `luxalgo.com` (+ subdomains), `accounts.google.com`, `appleid.apple.com`,
-`facebook.com` (+ subdomains). Everything else opens in the external browser.
+`facebook.com`, `accounts.youtube.com`, `discord.com`,
+`login.microsoftonline.com`, `checkout.stripe.com`, `js.stripe.com`,
+`paypal.com`, `challenges.cloudflare.com` (+ subdomains for every entry).
+Everything else opens in the external browser (with a short Toast naming the
+host). The list lives in ONE place: `Policy.kt` (`ALLOWED_HOSTS`), covered by
+JVM unit tests in `app/src/test/`.
 
 ## Requirements
 - JDK 17 (Temurin recommended)
