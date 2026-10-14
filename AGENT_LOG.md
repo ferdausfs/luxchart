@@ -10,6 +10,56 @@ secret values in this file. Secret *names* and file *names* are allowed.
 
 ---
 
+## Hotfix 1.6.1 — 2026-10-14 — launch-crash fix: IO-thread WebView access + Tier-2 hardening + crash visibility (versionName 1.6.1)
+
+- **Agent/Tool:** GLM (Super Z CLI) acting as senior Android engineer
+- **Feature:** HOTFIX 1.6.1 — app crashed at launch ("WebView caused LuxChart to crash", release 1.6.0 run #18)
+- **What changed:**
+  1. ROOT CAUSE: `shouldInterceptRequest` read `view.settings.userAgentString`
+     on the WebView IO thread (WebView methods are main-thread only →
+     RuntimeException, outside the engine's try/catch). The desktop UA is now
+     captured ONCE on the main thread in `configureWebView` into a
+     `@Volatile requestUserAgent` and passed to the engine. Full callback
+     audit: `shouldInterceptRequest` was the ONLY non-main-thread callback
+     touching WebView/WebSettings/View (onRenderProcessGone is main-thread;
+     JS-bridge methods already funnel UI work through runOnUiThread /
+     executors) — thread-rule comments added at each site.
+  2. Entire `shouldInterceptRequest` body wrapped in try/catch(Throwable) →
+     null (Log.w with reason). Nothing from the interceptor can crash the app.
+  3. Tier-2 hardening: main-frame navigations never intercepted
+     (`isForMainFrame` → null); `Range` requests added to the skip rules
+     (pure, tested); `instanceFollowRedirects=false` and any 3xx → null
+     (redirects belong to the WebView); Set-Cookie of an intercepted 200 is
+     applied via `CookieManager.setCookie` + flush before returning (stored
+     responses still NEVER keep Set-Cookie); `Origin`/`Referer`/`Accept`/
+     `Accept-Language` forwarded from the original request via pure
+     `Policy.forwardableRequestHeaders` (never Authorization; all previous
+     skip rules unchanged).
+  4. Crash visibility (no logcat needed): default uncaught-exception handler
+     writes a sanitized trace (query strings stripped from URLs, cookie
+     values redacted, 20k cap — pure `Policy.sanitizeCrashText`) to
+     `filesDir/last-crash.txt`, then delegates to the previous handler. On
+     the next launch the file is shown in a Copy / Share / Close dialog and
+     deleted on dismiss (4 s fallback if the page never paints).
+  5. Crash-loop kill switch: launch counter in SharedPreferences, incremented
+     in onCreate, reset after the page is visible 10 s. At >= 2 (pure
+     `Policy.tier2KillSwitch`) the interceptor returns null for the whole run
+     (Tier 2 off until the next successful run) + short Toast.
+  6. JVM tests added for every pure addition (header filter, Range skip,
+     sanitizer, kill switch). versionName 1.6.1. Signing/CI/applicationId
+     untouched.
+- **Touched files:** `MainActivity.kt`, `Tier2Cache.kt`, `Policy.kt`,
+  `HotfixPolicyTest.kt` (new), `app/build.gradle.kts`, `strings.xml`
+- **Build:** CI run #20 — GREEN, artifact
+  `LuxChart-release-apk-20`: https://github.com/ferdausfs/luxchart/actions/runs/38528773541
+- **Pending items:** none for the hotfix; Tier-2 disk format unchanged
+  (swr-cache/v1).
+- **Notes for next agent:** the interceptor is now forbidden from touching
+  the WebView/WebSettings/Views — if a future change needs the UA or any
+  WebView value there, capture it on the main thread like `requestUserAgent`.
+  Keep every new pure rule in `Policy.kt` with a JVM test.
+---
+
 ## Phase 5 — 2026-10-14 — Offline Tier 2 (SWR disk cache) + diagnostics (versionName 1.6.0)
 
 - **Agent/Tool:** GLM (Super Z CLI) acting as senior Android engineer
