@@ -26,20 +26,24 @@ import java.util.concurrent.atomic.AtomicInteger
  *  - Any exception => return null (WebView default path). Three consecutive
  *    exceptions disable this cache for the rest of the session. The cache
  *    must never break the app.
- *  - 500 MB LRU cap, versioned directory, key = METHOD + normalized URL.
+ *  - SAVED DATA STAYS UNTIL I CLEAR IT (Phase 7 item 2): NO automatic
+ *    deletion of any kind. The old LRU eviction is GONE. New stores are
+ *    refused with a one-time "Saved-data limit reached" toast once the
+ *    4 GB total cap is reached — existing entries are never deleted;
+ *    "Clear saved data" is the ONLY deletion. Key = METHOD + normalized URL.
  *  - Diagnostics: hit/miss/stored/skipped counters + last 50 skipped
  *    luxalgo host+path entries (never query strings, cookies or tokens).
  *
  * Threading: shouldInterceptRequest runs on WebView IO threads. Network fetch
- * happens outside the lock; disk writes + eviction are serialized under
- * [lock]. Eviction runs on a private single-thread executor.
+ * happens outside the lock; disk writes are serialized under [lock].
  */
 class Tier2Cache(
     private val dir: File,
     private val isOnline: () -> Boolean,
     private val cookieHeader: (String) -> String?,
     private val maxBytes: Long = DEFAULT_MAX_BYTES,
-    private val maxSingleResponseBytes: Int = DEFAULT_MAX_SINGLE_RESPONSE
+    private val maxSingleResponseBytes: Int = DEFAULT_MAX_SINGLE_RESPONSE,
+    private val onLimitReached: (() -> Unit)? = null
 ) {
 
     class Diagnostics internal constructor() {
@@ -103,7 +107,6 @@ class Tier2Cache(
     }
 
     val diagnostics = Diagnostics()
-    private val evictExecutor = Executors.newSingleThreadExecutor()
     private val lock = Any()
 
     /**
@@ -321,9 +324,11 @@ class Tier2Cache(
         status: Int,
         headers: Map<String, List<String>>,
         body: ByteArray
-    ) {
+    ): Boolean {
         synchronized(lock) {
             if (!dir.exists()) dir.mkdirs()
+            // Phase 7 item 2: hard stop for NEW stores at the cap — never delete.
+            if (!capAllowsLocked(body.size.toLong() + META_OVERHEAD_BYTES)) return false
             val bodyFile = File(dir, "$key.bin")
             val metaFile = File(dir, "$key.meta")
             val meta = JSONObject()
@@ -341,8 +346,29 @@ class Tier2Cache(
             meta.put("headers", safe)
             bodyFile.writeBytes(body)
             metaFile.writeText(meta.toString())
-            evictIfNeededAsync()
+            updateDiskBytesLocked()
         }
+        return true
+    }
+
+    /**
+     * Phase 7 item 2 — the 4 GB hard stop for NEW stores. TRUE => the store
+     * may proceed. FALSE => the incoming body is refused (existing entries
+     * are NEVER touched) and the one-time "Saved-data limit reached" toast
+     * fires exactly once per install (until Clear saved data resets it).
+     * Must be called while holding [lock] (reentrant reads of the dir).
+     */
+    private fun capAllowsLocked(incomingBytes: Long): Boolean {
+        val allowed = Policy.storeAllowedWithinCap(totalBytesLocked(), incomingBytes, maxBytes)
+        if (!allowed && limitToastShown.compareAndSet(false, true)) {
+            try { onLimitReached?.invoke() } catch (e: Exception) { /* never a crash source */ }
+        }
+        return allowed
+    }
+
+    /** Recomputes the saved-data size shown in diagnostics. Lock held. */
+    private fun updateDiskBytesLocked() {
+        diagnostics.diskBytes.set(totalBytesLocked())
     }
 
     /** A served disk entry: the WebView response plus the metadata needed by
@@ -355,7 +381,7 @@ class Tier2Cache(
 
     /**
      * Reads a stored entry from disk (online cache-first AND offline serving).
-     * Counts a hit and touches LRU recency; returns null on any miss/problem.
+     * Counts a hit; returns null on any miss/problem.
      */
     private fun readFromDisk(method: String, url: String): DiskHit? {
         val key = Policy.cacheKey(method, url)
@@ -369,7 +395,6 @@ class Tier2Cache(
             return try {
                 val meta = JSONObject(metaFile.readText())
                 val bytes = bodyFile.readBytes()
-                bodyFile.setLastModified(System.currentTimeMillis()) // LRU touch
                 diagnostics.hits.incrementAndGet()
                 resetFailures()
                 val status = meta.optInt("status", 200)
@@ -430,32 +455,11 @@ class Tier2Cache(
         }
     }
 
-    /** LRU eviction to ~80% of the cap, run off-thread after each store. */
-    private fun evictIfNeededAsync() {
-        evictExecutor.execute {
-            try {
-                synchronized(lock) {
-                    var files = dir.listFiles()?.filter { it.isFile && it.name.endsWith(".bin") }
-                        ?: return@synchronized
-                    var total = totalBytesLocked()
-                    diagnostics.diskBytes.set(total)
-                    if (total <= maxBytes) return@synchronized
-                    files = files.sortedBy { it.lastModified() }
-                    for (f in files) {
-                        if (total <= maxBytes * 80 / 100) break
-                        val meta = File(dir, f.nameWithoutExtension + ".meta")
-                        total -= f.length()
-                        f.delete()
-                        meta.delete()
-                    }
-                    diagnostics.diskBytes.set(totalBytesLocked())
-                }
-            } catch (e: Exception) {
-                // Eviction is best-effort.
-            }
-        }
-    }
-
+    /**
+     * Phase 7 item 2: the old LRU eviction is REMOVED — saved data stays
+     * until "Clear saved data". The only remaining size rule is the hard
+     * stop for NEW stores ([capAllowsLocked], checked by the store paths).
+     */
     private fun totalBytesLocked(): Long =
         dir.listFiles()?.filter { it.isFile && it.name.endsWith(".bin") }?.sumOf { it.length() } ?: 0L
 
@@ -470,15 +474,17 @@ class Tier2Cache(
             dir.listFiles()?.forEach { it.delete() }
             diagnostics.diskBytes.set(0)
         }
+        limitToastShown.set(false) // the 4 GB toast may fire again after a refill
         shellThrottle.clear()
         lastShellResult = "(cleared saved data)"
     }
 
     // ---- Main-page shell (Phase 6) ---------------------------------------------
     //
-    // Shells live in the SAME directory / LRU / lock as Tier-2 entries but use
-    // the "SHELL|" key namespace (Policy.shellKey), so they are disjoint from
-    // sub-resource entries. clear() wipes both; LRU eviction covers both.
+    // Shells live in the SAME directory / lock / 4 GB hard-stop cap as Tier-2
+    // entries but use the "SHELL|" key namespace (Policy.shellKey), so they are
+    // disjoint from sub-resource entries. clear() wipes both; the cap covers
+    // both (nothing is ever auto-deleted).
 
     /** A stored main-page shell: safe metadata + the HTML body. */
     class StoredShell(
@@ -493,6 +499,9 @@ class Tier2Cache(
     )
 
     private val shellExecutor = Executors.newSingleThreadExecutor()
+
+    /** One-time "Saved-data limit reached" toast guard (Phase 7 item 2). */
+    private val limitToastShown = AtomicBoolean(false)
 
     /** key(normalized URL) -> last shadow-fetch attempt (ms). */
     private val shellThrottle = java.util.concurrent.ConcurrentHashMap<String, Long>()
@@ -625,7 +634,8 @@ class Tier2Cache(
     /**
      * Persists a shell entry (safe headers only) under the "SHELL|" namespace.
      * Storage contract (Phase 6 item 3):
-     *  - SAME app-private versioned dir + LRU + 500 MB cap as Tier-2 entries;
+     *  - SAME app-private versioned dir + 4 GB hard stop as Tier-2 entries
+     *    (Phase 7: no LRU, no eviction — saved data stays until cleared);
      *    only the KEY namespace differs (Policy.shellKey), so eviction and
      *    "clear saved data" cover shells with zero extra machinery.
      *  - key = SHA-256("SHELL|" + normalized URL); the normalized URL keeps
@@ -663,13 +673,17 @@ class Tier2Cache(
                 }
             }
             meta.put("headers", safe)
+            if (!capAllowsLocked(body.size.toLong() + META_OVERHEAD_BYTES)) {
+                lastShellResult = "skipped:cap"
+                return
+            }
             File(dir, "$key.bin").writeBytes(body)
             File(dir, "$key.meta").writeText(meta.toString())
-            evictIfNeededAsync()
+            updateDiskBytesLocked()
         }
     }
 
-    /** Loads a stored shell for [url], or null. Touches LRU recency on hit. */
+    /** Loads a stored shell for [url], or null. */
     fun shellFor(url: String): StoredShell? {
         val key = Policy.shellKey(url) ?: return null
         synchronized(lock) {
@@ -679,7 +693,6 @@ class Tier2Cache(
             return try {
                 val meta = JSONObject(metaFile.readText())
                 val bytes = bodyFile.readBytes()
-                bodyFile.setLastModified(System.currentTimeMillis()) // LRU touch
                 val shellUrl = meta.optString("url", url)
                 val headersJson = meta.optJSONObject("headers")
                 val headers = LinkedHashMap<String, String>()
@@ -825,11 +838,18 @@ class Tier2Cache(
         try { URI(url).rawPath ?: "/" } catch (e: Exception) { "/" }
 
     companion object {
-        /** 500 MB total cap (spec). */
-        const val DEFAULT_MAX_BYTES = 500L * 1024 * 1024
+        /**
+         * 4 GB total cap for saved data (Phase 7 item 2). NOT an eviction
+         * target: when the total reaches this size, NEW stores are refused
+         * (one-time toast) and everything already saved stays on disk until
+         * "Clear saved data" — the only deletion path.
+         */
+        const val DEFAULT_MAX_BYTES = 4L * 1024 * 1024 * 1024
         /** Never buffer more than this per response (memory safety). */
         const val DEFAULT_MAX_SINGLE_RESPONSE = 25 * 1024 * 1024
         const val MAX_CONSECUTIVE_FAILURES = 3
+        /** Slack added to the cap check for meta files + filesystem overhead. */
+        private const val META_OVERHEAD_BYTES = 4L * 1024
         private const val CONNECT_TIMEOUT_MS = 8_000
         private const val READ_TIMEOUT_MS = 15_000
 

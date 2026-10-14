@@ -268,10 +268,20 @@ class MainActivity : ComponentActivity() {
         // Tier-2 offline cache — app-private, versioned directory. Lives for
         // the whole Activity (survives WebView recreation), created BEFORE the
         // first load so the very first request can already populate it.
+        // Phase 7 item 2: onLimitReached fires ONCE when the 4 GB hard stop
+        // refuses a new store (callback runs on a cache IO thread; the toast
+        // must be posted to the main thread).
         tier2Cache = Tier2Cache(
             dir = File(filesDir, "swr-cache/v1"),
             isOnline = { isOnline },
-            cookieHeader = { url -> CookieManager.getInstance().getCookie(url) }
+            cookieHeader = { url -> CookieManager.getInstance().getCookie(url) },
+            onLimitReached = {
+                runOnUiThread {
+                    Toast.makeText(
+                        this, R.string.saved_data_limit_reached, Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
         )
 
         setContentView(rootLayout)

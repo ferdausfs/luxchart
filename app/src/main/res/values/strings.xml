@@ -9,6 +9,7 @@
     <string name="offline_banner">Offline: showing saved data</string>
     <string name="offline_banner_nothing_saved">Offline: nothing saved for this page yet. Open it once while online.</string>
     <string name="saved_data_cleared">Saved data cleared</string>
+    <string name="saved_data_limit_reached">Saved-data limit reached — nothing new is saved until you clear saved data</string>
     <string name="diag_copied">Diagnostics copied</string>
     <string name="diag_copy">Copy</string>
     <string name="diag_share">Share</string>

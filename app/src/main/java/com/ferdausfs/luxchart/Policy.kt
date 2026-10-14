@@ -211,6 +211,16 @@ object Policy {
     }
 
     /**
+     * Phase 7 item 2 — the ONLY size rule for saved data. TRUE => a new
+     * store of [incomingBytes] fits under [capBytes] given [currentBytes]
+     * already saved. FALSE => refuse the NEW store. Existing entries are
+     * never deleted by this rule (no LRU, no eviction): "Clear saved data"
+     * is the only deletion path.
+     */
+    fun storeAllowedWithinCap(currentBytes: Long, incomingBytes: Long, capBytes: Long): Boolean =
+        currentBytes + incomingBytes <= capBytes
+
+    /**
      * Cache-key normalization: lower-case scheme+host, drop the fragment,
      * drop the default port (80/443), drop an empty query separator, and
      * sort query parameters for a stable key. Path case is preserved.
