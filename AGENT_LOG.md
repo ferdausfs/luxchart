@@ -10,6 +10,27 @@ secret values in this file. Secret *names* and file *names* are allowed.
 
 ---
 
+## Phase 0 — 2026-10-14 — Start URL → vela.luxalgo.com/chart (versionName 1.1.1)
+
+- **Agent/Tool:** GLM (Super Z CLI) acting as senior Android engineer
+- **Feature:** Phase 0 — locked start URL change (owner mandate)
+- **What changed:** `START_URL` in `MainActivity.kt` is now the single
+  constant `https://vela.luxalgo.com/chart`, used by first launch,
+  error-retry (`retryLoading`) and WebView re-creation. `const val` (was
+  `private const val`) with doc comment; allow-list untouched
+  (`vela.luxalgo.com` is a luxalgo.com subdomain). README start-URL section
+  added; all live `www.luxalgo.com` references dropped (AGENT_LOG history
+  entries intentionally untouched — append-only). versionName 1.1.0 → 1.1.1.
+- **Touched files:** `app/src/main/java/com/ferdausfs/luxchart/MainActivity.kt`,
+  `app/build.gradle.kts`, `README.md`
+- **Commit hashes:** `41a78dd` (code+version), `a8d0c5a` (README)
+- **Build:** CI run #7 — GREEN, artifact
+  `LuxChart-release-apk-7`: https://github.com/ferdausfs/luxchart/actions/runs/38514030464
+- **Pending items:** none for this phase
+- **Notes for next agent:** tag `phase-0-green` marks the last green commit of
+  this phase (roll-back point).
+---
+
 ## Session 2 — 2026-10-14 — All 9 pending features + UI polish (BUILD: GREEN)
 
 - **Agent/Tool:** GLM (Super Z CLI) acting as senior Android engineer
