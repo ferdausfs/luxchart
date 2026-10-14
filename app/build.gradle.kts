@@ -4,7 +4,7 @@ plugins {
 }
 
 // ---- Single source of truth for the user-visible version name ----
-val APP_VERSION_NAME = "1.5.0"
+val APP_VERSION_NAME = "1.6.0"
 
 // CI sets GITHUB_RUN_NUMBER; local builds fall back to 1.
 val CI_RUN_NUMBER = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1

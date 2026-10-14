@@ -103,6 +103,9 @@ class MainActivity : ComponentActivity() {
     /** Last real (http/https) page URL — kept current in onPageStarted. */
     private var currentUrl: String = START_URL
 
+    /** Tier-2 offline cache (stale-while-revalidate, app-private). */
+    private var tier2Cache: Tier2Cache? = null
+
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
     private var pendingDownload: PendingDownload? = null
     private var pendingBlob: PendingBlob? = null
@@ -205,6 +208,16 @@ class MainActivity : ComponentActivity() {
 
         buildLayout()
         createAndAttachWebView()
+
+        // Tier-2 offline cache — app-private, versioned directory. Lives for
+        // the whole Activity (survives WebView recreation), created BEFORE the
+        // first load so the very first request can already populate it.
+        tier2Cache = Tier2Cache(
+            dir = File(filesDir, "swr-cache/v1"),
+            isOnline = { isOnline },
+            cookieHeader = { url -> CookieManager.getInstance().getCookie(url) }
+        )
+
         setContentView(rootLayout)
         applyEdgeToEdgeAndInsets()
         onBackPressedDispatcher.addCallback(this, backCallback)
@@ -427,6 +440,22 @@ class MainActivity : ComponentActivity() {
             if (url != null && url.startsWith("http")) currentUrl = url
         }
 
+        override fun shouldInterceptRequest(
+            view: WebView,
+            request: WebResourceRequest
+        ): WebResourceResponse? {
+            // Tier-2 offline cache. Runs on a WebView IO thread — the engine
+            // is fully thread-safe and ALWAYS returns null on any doubt.
+            // Returns null for everything it does not own (third-party,
+            // auth, non-GET, streaming…): the WebView then loads normally.
+            return tier2Cache?.intercept(
+                request.method,
+                request.url.toString(),
+                request.requestHeaders,
+                view.settings.userAgentString
+            )
+        }
+
         override fun shouldOverrideUrlLoading(
             view: WebView,
             request: WebResourceRequest
@@ -537,6 +566,13 @@ class MainActivity : ComponentActivity() {
                 rootLayout.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
                 retryLoading()
             }
+        }
+
+        /** "Clear saved data" control on the error/offline screen (Tier-2). */
+        @JavascriptInterface
+        fun clearSavedData() {
+            tier2Cache?.clear()
+            toastInternal(getString(R.string.saved_data_cleared))
         }
     }
 

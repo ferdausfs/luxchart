@@ -41,6 +41,13 @@
   }
   button:active { transform: scale(.96); box-shadow: 0 6px 14px rgba(20, 184, 166, .22); }
   button:hover { filter: brightness(1.06); }
+  button.secondary {
+    background: transparent; color: var(--dim);
+    border: 1px solid var(--line); box-shadow: none;
+    font-weight: 500; font-size: 13px; padding: 10px 22px; margin-top: 12px;
+  }
+  button.secondary:active { transform: scale(.97); box-shadow: none; }
+  button.secondary:hover { filter: none; color: var(--text); }
   @keyframes float { 0%, 100% { transform: translateY(0) } 50% { transform: translateY(-8px) } }
   @keyframes pulse { 0%, 100% { opacity: .55 } 50% { opacity: 1 } }
   .dots {
@@ -66,6 +73,7 @@
     <h1>Connection lost</h1>
     <p id="msg">This page failed to load. Check your connection — LuxChart will retry automatically when the network is back.</p>
     <button id="retry">Try again</button>
+    <div><button id="clear" class="secondary">Clear saved data</button></div>
     <div class="dots">AUTO-RETRY ENABLED</div>
   </div>
   <script>
@@ -80,6 +88,12 @@
       } catch (e) {}
       document.getElementById('retry').addEventListener('click', function () {
         if (window.LuxBridge && window.LuxBridge.retry) window.LuxBridge.retry();
+      });
+      document.getElementById('clear').addEventListener('click', function () {
+        if (window.LuxBridge && window.LuxBridge.clearSavedData) {
+          window.LuxBridge.clearSavedData();
+          this.textContent = 'Saved data cleared';
+        }
       });
     })();
   </script>

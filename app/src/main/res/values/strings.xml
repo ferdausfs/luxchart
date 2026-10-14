@@ -7,4 +7,8 @@
     <string name="blob_saved">Saved %1$s to Downloads</string>
     <string name="blob_failed">Couldn\'t save the file</string>
     <string name="offline_banner">Offline: showing saved data</string>
+    <string name="saved_data_cleared">Saved data cleared</string>
+    <string name="diag_copied">Diagnostics copied</string>
+    <string name="diag_share">Share</string>
+    <string name="diag_close">Close</string>
 </resources>
