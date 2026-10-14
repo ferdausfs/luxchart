@@ -370,6 +370,68 @@ object Policy {
         return sha256Hex("$method|".uppercase() + normalized)
     }
 
+    // ---- Relaxed cache key (Phase 8 B1, pure, tested — BUG B fix) --------------
+
+    /**
+     * Time-window query params STRIPPED from the RELAXED key. These are the
+     * moving parts of chart candle requests (from/to/countback and friends
+     * change on EVERY call) — the reason the exact key never repeated and
+     * every timeframe re-fetch hit the network (BUG B root cause). Matching
+     * is on the raw parameter NAME before the '=', case-insensitive.
+     * NOTE: deliberately NOT in the exact-key [NOISY_QUERY_PARAMS] list —
+     * exact keys must keep distinguishing different windows (pinned by test).
+     */
+    val TIME_WINDOW_QUERY_PARAMS = listOf(
+        "from", "to", "countback", "since", "until", "start", "end",
+        "start_time", "end_time", "starttime", "endtime",
+        "limit-by-time", "cursor-by-time"
+    )
+
+    private val TIME_WINDOW_SET = TIME_WINDOW_QUERY_PARAMS.toSet()
+
+    /**
+     * Relaxed key normalization: exactly [normalizeUrl] but the query ALSO
+     * loses every [TIME_WINDOW_QUERY_PARAMS] entry (on top of the noisy
+     * cache-busters). Everything else is KEPT — symbol, resolution/timeframe,
+     * type, interval and the path — so the same symbol+timeframe collapses to
+     * ONE relaxed key while a different resolution/path can never collide.
+     */
+    fun relaxedNormalizeUrl(url: String?): String? {
+        if (url.isNullOrBlank()) return null
+        return try {
+            val uri = java.net.URI(url.trim())
+            val scheme = uri.scheme?.lowercase() ?: return null
+            val host = uri.host?.lowercase() ?: return null
+            val defaultPort = when (scheme) { "http" -> 80; "https" -> 443; else -> null }
+            val port = if (uri.port != -1 && uri.port != defaultPort) ":${uri.port}" else ""
+            val path = uri.rawPath ?: ""
+            val query = uri.rawQuery
+                ?.split('&')
+                ?.filter { it.isNotEmpty() }
+                ?.filter { pair ->
+                    val key = pair.substringBefore('=', "").trim().lowercase()
+                    key !in NOISY_PARAM_SET && key !in TIME_WINDOW_SET
+                }
+                ?.sorted()
+                ?.joinToString("&")
+                ?.takeIf { it.isNotEmpty() }
+                ?.let { "?$it" } ?: ""
+            "$scheme://$host$port$path$query"
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Relaxed cache key: SHA-256 of "METHOD|R|relaxed-normalized-url".
+     * The extra "R" namespace keeps relaxed keys disjoint from exact "GET|"
+     * keys and "SHELL|" keys in the same directory. Null when unparseable.
+     */
+    fun relaxedCacheKey(method: String, url: String): String? {
+        val normalized = relaxedNormalizeUrl(url) ?: return null
+        return sha256Hex("$method|R|".uppercase() + normalized)
+    }
+
     private fun sha256Hex(input: String): String {
         val digest = java.security.MessageDigest.getInstance("SHA-256")
         return digest.digest(input.toByteArray(Charsets.UTF_8))

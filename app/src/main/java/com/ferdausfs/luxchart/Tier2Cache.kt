@@ -225,6 +225,9 @@ class Tier2Cache(
                 // gets ONE background refresh (one in-flight per key) that
                 // overwrites the stored copy for next time. No entry =>
                 // fetch, store, return (Tier-2 behaviour as before).
+                // Phase 8 B1: ONLINE serving stays EXACT-KEY only — the
+                // relaxed key is an OFFLINE safety net (latest saved data for
+                // that symbol+timeframe) and never changes online behaviour.
                 val key = Policy.cacheKey(method!!, url)
                 val hit = readFromDisk(method, url)
                 if (hit != null) {
@@ -238,9 +241,18 @@ class Tier2Cache(
                 fetchAndStore(method, url, requestHeaders ?: emptyMap(), userAgent)
             } else {
                 val hit = readFromDisk(method!!, url)
-                if (hit != null) {
-                    recordRequest(method, url, hit.status, hit.contentType, hit.byteCount.toLong(), "HIT")
-                    hit.response
+                // Phase 8 B1 (BUG B): OFFLINE exact-key miss falls back to the
+                // RELAXED key (same symbol+timeframe+path, no time-window
+                // params) so an already-loaded timeframe opens instantly from
+                // saved data instead of failing into the error page.
+                val relaxed = if (hit == null) readRelaxedFromDisk(method, url) else null
+                if (hit != null || relaxed != null) {
+                    val served = hit ?: relaxed!!
+                    recordRequest(
+                        method, url, served.status, served.contentType,
+                        served.byteCount.toLong(), if (hit != null) "HIT" else "HIT-RELAXED"
+                    )
+                    served.response
                 } else {
                     // Offline with nothing saved: the WebView fails naturally
                     // into the error page — record WHY (Phase 7 item 10).
@@ -599,9 +611,48 @@ class Tier2Cache(
             // Phase 7 item 8: the meta records the exact body length and is
             // written LAST, so its presence proves the body file is complete.
             meta.put("body-length", body.size)
+            meta.put("saved-at", System.currentTimeMillis())
             val ok = writeEntryAtomically(key, meta, body)
-            if (ok) updateDiskBytesLocked()
+            if (ok) {
+                updateDiskBytesLocked()
+                // Phase 8 B1 (BUG B): publish the RELAXED-key pointer so an
+                // OFFLINE exact-miss can still find the latest saved body for
+                // this symbol+timeframe+path. Latest store wins (the pointer
+                // is overwritten on every store). Meta-only file (~200 B),
+                // never a body duplicate — disk cost stays single-copy.
+                writeRelaxedPointerLocked(url, key, body.size)
+            }
             return ok
+        }
+    }
+
+    /**
+     * Phase 8 B1: writes/overwrites the relaxed-key POINTER meta for [url]
+     * ("type":"relaxed", body-ref = the exact key just stored). Atomic
+     * (tmp+rename, same pattern as entries); failure is silently ignored —
+     * the pointer is an offline optimization, never a correctness contract.
+     * MUST be called with [lock] held after a successful exact-key store.
+     */
+    private fun writeRelaxedPointerLocked(url: String, exactKey: String, bodyLength: Int) {
+        try {
+            val relaxKey = Policy.relaxedCacheKey("GET", url) ?: return
+            val meta = JSONObject()
+            meta.put("type", "relaxed")
+            meta.put("url", url)
+            meta.put("body-ref", exactKey)
+            meta.put("body-length", bodyLength)
+            meta.put("saved-at", System.currentTimeMillis())
+            val metaFile = File(dir, "$relaxKey.meta")
+            val metaTmp = File(dir, "$relaxKey.meta.tmp")
+            metaTmp.writeText(meta.toString())
+            if (!metaTmp.renameTo(metaFile)) {
+                metaFile.delete()
+                if (!metaTmp.renameTo(metaFile)) {
+                    runCatching { metaTmp.delete() }
+                }
+            }
+        } catch (e: Exception) {
+            // pointer write must never break the store path
         }
     }
 
@@ -688,52 +739,88 @@ class Tier2Cache(
     )
 
     /**
-     * Reads a stored entry from disk (online cache-first AND offline serving).
-     * Counts a hit; returns null on any miss/problem.
+     * Reads a stored entry from disk (online cache-first AND offline serving)
+     * by its EXACT key. Counts a hit; returns null on any miss/problem.
      */
     private fun readFromDisk(method: String, url: String): DiskHit? {
         val key = Policy.cacheKey(method, url)
         synchronized(lock) {
-            val bodyFile = key?.let { File(dir, "$it.bin") }
-            val metaFile = key?.let { File(dir, "$it.meta") }
-            if (bodyFile == null || metaFile == null || !bodyFile.exists() || !metaFile.exists()) {
-                diagnostics.misses.incrementAndGet()
-                return null
-            }
-            return try {
-                val meta = JSONObject(metaFile.readText())
-                val bytes = bodyFile.readBytes()
-                if (!entryIntactLocked(bodyFile, metaFile, meta, bytes)) {
-                    diagnostics.misses.incrementAndGet()
+            val hit = key?.let { loadEntryLocked(it) }
+            if (hit == null) diagnostics.misses.incrementAndGet()
+            return hit
+        }
+    }
+
+    /**
+     * Phase 8 B1 (BUG B): loads the RELAXED-key entry for [url] — the small
+     * pointer meta written by every store ([writeRelaxedPointerLocked]) that
+     * names the exact-key entry holding the LATEST body for this symbol +
+     * timeframe + path. The pointer is followed, then the referenced entry is
+     * loaded with the same integrity checks as a direct read. A stale pointer
+     * (referenced entry gone/corrupt) is deleted and treated as a MISS —
+     * never an exception, never a failure count.
+     */
+    private fun readRelaxedFromDisk(method: String, url: String): DiskHit? {
+        val relaxKey = Policy.relaxedCacheKey(method, url) ?: return null
+        synchronized(lock) {
+            val pointerFile = File(dir, "$relaxKey.meta")
+            if (!pointerFile.exists()) return null
+            val refKey = try {
+                val pointer = JSONObject(pointerFile.readText())
+                if (pointer.optString("type") != "relaxed") {
+                    runCatching { pointerFile.delete() }
                     return null
                 }
-                diagnostics.hits.incrementAndGet()
-                resetFailures()
-                // Phase 7 item 9: count every byte the cache puts back —
-                // online cache-first and offline serving alike.
-                diagnostics.bytesServed.addAndGet(bytes.size.toLong())
-                val status = meta.optInt("status", 200)
-                val contentType = meta.optString("content-type", null)
-                val mime = contentType?.substringBefore(';')?.trim()?.ifEmpty { null }
-                val charset = contentType
-                    ?.split(';')
-                    ?.map { it.trim() }
-                    ?.firstOrNull { it.startsWith("charset=", true) }
-                    ?.substringAfter('=')?.trim(' ', '"')
-                val response = WebResourceResponse(
-                    mime, charset, status, "OK", mapOf(), ByteArrayInputStream(bytes)
-                )
-                val headers = meta.optJSONObject("headers")
-                headers?.keys()?.forEach { name -> response.responseHeaders[name] = headers.getString(name) }
-                DiskHit(response, contentType, bytes.size, status)
+                pointer.optString("body-ref").takeIf { it.isNotEmpty() }
             } catch (e: Exception) {
-                // Corrupt/unreadable meta => delete the pair, count a MISS —
-                // never an exception to the caller, never a failure count.
-                runCatching { bodyFile.delete() }
-                runCatching { metaFile.delete() }
-                diagnostics.misses.incrementAndGet()
+                // Corrupt pointer => delete, plain MISS.
+                runCatching { pointerFile.delete() }
                 null
-            }
+            } ?: return null
+            val hit = loadEntryLocked(refKey)
+            if (hit == null) runCatching { pointerFile.delete() }
+            return hit
+        }
+    }
+
+    /**
+     * Shared entry loader (exact keys, called with [lock] held): reads body +
+     * meta, validates integrity (Phase 7 item 8), counts hit + bytes served.
+     * Returns null on ANY problem; corrupt pairs are deleted in place.
+     */
+    private fun loadEntryLocked(key: String): DiskHit? {
+        val bodyFile = File(dir, "$key.bin")
+        val metaFile = File(dir, "$key.meta")
+        if (!bodyFile.exists() || !metaFile.exists()) return null
+        return try {
+            val meta = JSONObject(metaFile.readText())
+            val bytes = bodyFile.readBytes()
+            if (!entryIntactLocked(bodyFile, metaFile, meta, bytes)) return null
+            diagnostics.hits.incrementAndGet()
+            resetFailures()
+            // Phase 7 item 9: count every byte the cache puts back —
+            // online cache-first and offline serving alike.
+            diagnostics.bytesServed.addAndGet(bytes.size.toLong())
+            val status = meta.optInt("status", 200)
+            val contentType = meta.optString("content-type", null)
+            val mime = contentType?.substringBefore(';')?.trim()?.ifEmpty { null }
+            val charset = contentType
+                ?.split(';')
+                ?.map { it.trim() }
+                ?.firstOrNull { it.startsWith("charset=", true) }
+                ?.substringAfter('=')?.trim(' ', '"')
+            val response = WebResourceResponse(
+                mime, charset, status, "OK", mapOf(), ByteArrayInputStream(bytes)
+            )
+            val headers = meta.optJSONObject("headers")
+            headers?.keys()?.forEach { name -> response.responseHeaders[name] = headers.getString(name) }
+            DiskHit(response, contentType, bytes.size, status)
+        } catch (e: Exception) {
+            // Corrupt/unreadable meta => delete the pair, count a MISS —
+            // never an exception to the caller, never a failure count.
+            runCatching { bodyFile.delete() }
+            runCatching { metaFile.delete() }
+            null
         }
     }
 

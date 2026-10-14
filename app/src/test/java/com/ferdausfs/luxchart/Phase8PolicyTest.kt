@@ -1,5 +1,8 @@
 package com.ferdausfs.luxchart
 
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -70,5 +73,78 @@ class Phase8PolicyTest {
         assertFalse(Policy.restoreAllowed("   "))
         assertFalse(Policy.restoreAllowed("https://"))
         assertFalse(Policy.restoreAllowed("::not a url::"))
+    }
+
+    // ---- B1: relaxed cache key (BUG B) ------------------------------------------
+
+    @Test
+    fun `same timeframe with different time windows collapses to one relaxed key`() {
+        val a = "https://api.luxalgo.com/v1/candles?symbol=BTCUSD&resolution=5&from=1000&to=2000&countback=300"
+        val b = "https://api.luxalgo.com/v1/candles?symbol=BTCUSD&resolution=5&from=9000&to=11000&countback=300"
+        val c = "https://api.luxalgo.com/v1/candles?resolution=5&to=55555&countback=1&from=-123&symbol=BTCUSD"
+        val ka = Policy.relaxedCacheKey("GET", a)
+        val kb = Policy.relaxedCacheKey("GET", b)
+        val kc = Policy.relaxedCacheKey("GET", c)
+        assertEquals(ka, kb)
+        assertEquals(ka, kc)
+    }
+
+    @Test
+    fun `different resolution never collides in the relaxed key`() {
+        val m5 = "https://api.luxalgo.com/v1/candles?symbol=BTCUSD&resolution=5&from=1000&to=2000"
+        val m15 = "https://api.luxalgo.com/v1/candles?symbol=BTCUSD&resolution=15&from=1000&to=2000"
+        val d1 = "https://api.luxalgo.com/v1/candles?symbol=BTCUSD&resolution=D&from=1000&to=2000"
+        assertNotEquals(Policy.relaxedCacheKey("GET", m5), Policy.relaxedCacheKey("GET", m15))
+        assertNotEquals(Policy.relaxedCacheKey("GET", m5), Policy.relaxedCacheKey("GET", d1))
+    }
+
+    @Test
+    fun `different symbol and path never collide in the relaxed key`() {
+        val btc = "https://api.luxalgo.com/v1/candles?symbol=BTCUSD&resolution=5"
+        val eth = "https://api.luxalgo.com/v1/candles?symbol=ETHUSD&resolution=5"
+        val other = "https://api.luxalgo.com/v1/indicators?symbol=BTCUSD&resolution=5"
+        assertNotEquals(Policy.relaxedCacheKey("GET", btc), Policy.relaxedCacheKey("GET", eth))
+        assertNotEquals(Policy.relaxedCacheKey("GET", btc), Policy.relaxedCacheKey("GET", other))
+    }
+
+    @Test
+    fun `relaxed key keeps non-time params and drops the whole time-window family`() {
+        val withWindow = Policy.relaxedNormalizeUrl(
+            "https://api.luxalgo.com/v1/candles?symbol=BTC&resolution=5&type=bar&from=1&to=2&countback=3&since=4&until=5&start=6&end=7&_=9"
+        )
+        assertEquals(
+            "https://api.luxalgo.com/v1/candles?resolution=5&symbol=BTC&type=bar",
+            withWindow
+        )
+    }
+
+    @Test
+    fun `relaxed key is namespaced away from exact and shell keys`() {
+        val url = "https://api.luxalgo.com/v1/candles?symbol=BTC&resolution=5"
+        val exact = Policy.cacheKey("GET", url)
+        val relaxed = Policy.relaxedCacheKey("GET", url)
+        val shell = Policy.shellKey(url)
+        assertNotEquals(exact, relaxed)
+        assertNotEquals(shell, relaxed)
+    }
+
+    @Test
+    fun `exact key still keeps from and to (bug B root cause documented)`() {
+        // The EXACT key must keep time-window params (two calls with different
+        // windows are different resources); the bug was that the chart's
+        // moving window therefore never repeated. This test pins the exact
+        // behaviour so the relaxed layer stays the fix.
+        val a = "https://api.luxalgo.com/v1/candles?symbol=BTC&resolution=5&from=1&to=2"
+        val b = "https://api.luxalgo.com/v1/candles?symbol=BTC&resolution=5&from=3&to=4"
+        assertNotEquals(Policy.cacheKey("GET", a), Policy.cacheKey("GET", b))
+        assertEquals(Policy.relaxedCacheKey("GET", a), Policy.relaxedCacheKey("GET", b))
+    }
+
+    @Test
+    fun `relaxed normalization rejects bad urls`() {
+        assertNull(Policy.relaxedNormalizeUrl(null))
+        assertNull(Policy.relaxedNormalizeUrl(""))
+        assertNull(Policy.relaxedNormalizeUrl("::bad::"))
+        assertNull(Policy.relaxedCacheKey("GET", "::bad::"))
     }
 }
