@@ -432,6 +432,41 @@ object Policy {
         return sha256Hex("$method|R|".uppercase() + normalized)
     }
 
+    // ---- Cloudflare challenge skip (Phase 8 G1, pure, tested) ------------------
+
+    /**
+     * Status codes that are, in practice, bot-protection challenge or
+     * rate-limit responses when a NON-browser client (the Tier-2
+     * HttpURLConnection fetch) hits a Cloudflare-protected origin.
+     */
+    val CHALLENGE_STATUSES = listOf(403, 429, 503)
+
+    /**
+     * Response-header NAMES (substring, case-insensitive) that mark a
+     * Cloudflare-managed challenge/block regardless of status. Any value
+     * counts. NOTE: a plain "server: cloudflare" header is NOT a hint — it
+     * is on every CF-proxied response, challenge or not.
+     */
+    val CHALLENGE_HEADER_HINTS = listOf("cf-mitigated", "cf-challenge", "cf-chl")
+
+    /**
+     * TRUE => this response is a challenge / rate-limit wall, not the real
+     * resource. The Tier-2 fetch has a different TLS fingerprint than
+     * Chromium, so it gets challenges the WebView would never see; the
+     * interceptor must return NULL (WebView loads it with its own network
+     * stack) and NEVER store the body. Pure + tested.
+     */
+    fun isChallengeResponse(status: Int, responseHeaders: Map<String, List<String>>): Boolean {
+        if (status in CHALLENGE_STATUSES) return true
+        return responseHeaders.entries.any { (name, _) ->
+            val n = (name as? String)?.trim()?.lowercase() ?: return@any false
+            CHALLENGE_HEADER_HINTS.any { n.contains(it) }
+        }
+    }
+
+    /** Hosts are challenge-blocked after this many consecutive challenges. */
+    const val MAX_CHALLENGE_STRIKES = 3
+
     // ---- Chart-like request classification (Phase 8 evidence tool, pure) ------
 
     /**

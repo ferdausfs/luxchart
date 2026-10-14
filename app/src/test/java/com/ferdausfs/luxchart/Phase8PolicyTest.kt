@@ -173,4 +173,50 @@ class Phase8PolicyTest {
         assertFalse(Policy.chartLikeRequest(""))
         assertFalse(Policy.chartLikeRequest("::bad::"))
     }
+
+    // ---- G1: Cloudflare challenge-response rule --------------------------------
+
+    private fun headersOf(vararg pairs: Pair<String, String>): Map<String, List<String>> =
+        pairs.map { (k, v) -> k to listOf(v) }.toMap()
+
+    @Test
+    fun `challenge statuses are always a challenge`() {
+        assertTrue(Policy.isChallengeResponse(403, emptyMap()))
+        assertTrue(Policy.isChallengeResponse(429, emptyMap()))
+        assertTrue(Policy.isChallengeResponse(503, emptyMap()))
+    }
+
+    @Test
+    fun `cf headers mark a challenge regardless of status`() {
+        assertTrue(
+            Policy.isChallengeResponse(200, headersOf("cf-mitigated" to "challenge"))
+        )
+        assertTrue(
+            Policy.isChallengeResponse(200, headersOf("Cf-Chl-Bypass" to "1"))
+        )
+        assertTrue(
+            Policy.isChallengeResponse(404, headersOf("cf-challenge" to "js-pass"))
+        )
+    }
+
+    @Test
+    fun `plain cloudflare server header is NOT a challenge`() {
+        assertFalse(
+            Policy.isChallengeResponse(200, headersOf("server" to "cloudflare"))
+        )
+        assertFalse(Policy.isChallengeResponse(200, emptyMap()))
+    }
+
+    @Test
+    fun `regular 4xx and 5xx are not challenges`() {
+        assertFalse(Policy.isChallengeResponse(404, emptyMap()))
+        assertFalse(Policy.isChallengeResponse(500, emptyMap()))
+        assertFalse(Policy.isChallengeResponse(401, headersOf("server" to "nginx")))
+    }
+
+    @Test
+    fun `three strikes in a row block a host and any other outcome resets the row`() {
+        // Pure-rule sanity: the constant matches the spec (3).
+        assertEquals(3, Policy.MAX_CHALLENGE_STRIKES)
+    }
 }

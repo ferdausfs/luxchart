@@ -67,6 +67,18 @@ class Tier2Cache(
         /** Phase 7 item 9: bytes served from the disk cache (online + offline). */
         val bytesServed = AtomicLong()
 
+        /** Phase 8 G1: challenge/rate-limit responses skipped (WebView takes over). */
+        val challengeSkips = AtomicLong()
+
+        /** Hosts whose interception is stopped for the run (3 challenges in a row). */
+        private val challengeBlocked = java.util.Collections.newSetFromMap(
+            java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+        )
+
+        internal fun blockHostForChallenges(host: String) { challengeBlocked.add(host) }
+        internal fun isHostChallengeBlocked(host: String): Boolean = challengeBlocked.contains(host)
+        internal fun blockedHostsSnapshot(): List<String> = challengeBlocked.sorted()
+
         private val recentSkipped = ArrayDeque<String>()
         private val ringLock = Any()
 
@@ -93,6 +105,12 @@ class Tier2Cache(
                 .append("  skipped: ").append(skipped.get()).append('\n')
             sb.append("cache-first hits (online): ").append(cacheFirstHits.get())
                 .append("  background refresh updates: ").append(refreshUpdates.get()).append('\n')
+            sb.append("challenge skips: ").append(challengeSkips.get())
+            val blocked = blockedHostsSnapshot()
+            if (blocked.isNotEmpty()) {
+                sb.append("  challenge-blocked hosts: ").append(blocked.joinToString(", "))
+            }
+            sb.append('\n')
             sb.append("bytes served from cache: ").append(fmt(bytesServed.get())).append('\n')
             sb.append("disk: ").append(fmt(diskBytes.get())).append('\n')
             sb.append("consecutive fetch failures: ").append(failures.get()).append('\n')
@@ -313,6 +331,13 @@ class Tier2Cache(
                 return null
             }
             return if (isOnline()) {
+                // Phase 8 G1: a host that answered 3 challenges in a row stops
+                // being intercepted (ONLINE only) for the rest of the run —
+                // the WebView's own stack is the only thing that can pass.
+                if (diagnostics.isHostChallengeBlocked(host)) {
+                    recordRequest(method, url, 0, null, -1, "SKIP:challenge-host")
+                    return null
+                }
                 // Phase 7 item 1 — CACHE-FIRST ONLINE: a stored entry is
                 // served IMMEDIATELY even while online (counted as a hit).
                 // Static assets are never revalidated; API-like JSON/text
@@ -430,6 +455,22 @@ class Tier2Cache(
             // Hotfix 1.6.1 item 3 (kept): every intercepted response hands its
             // Set-Cookie to the WebView cookie store before returning.
             applySetCookies(url, headers)
+
+            // Phase 8 G1 — Cloudflare challenge / rate-limit wall. The Tier-2
+            // fetch has a different TLS fingerprint than Chromium, so CF can
+            // answer IT with 403/429/503 challenges the WebView would never
+            // see. Return null: the WebView re-fetches with its own network
+            // stack (the only client that can actually pass the challenge).
+            // NEVER store these bodies, NEVER count a fetch failure; count
+            // challengeSkips and 3-strike the host.
+            if (Policy.isChallengeResponse(status, headers)) {
+                runCatching { conn.disconnect() }
+                diagnostics.challengeSkips.incrementAndGet()
+                noteChallengeStrike(hostOf(url))
+                recordRequest(method, url, status, contentType, -1, "SKIP:challenge")
+                return null
+            }
+            resetChallengeStrikes(hostOf(url))
 
             // Phase 7 item 7 — 4xx/5xx return the REAL response (status, body,
             // reason phrase) instead of null, so the WebView does not re-request
@@ -925,6 +966,31 @@ class Tier2Cache(
 
     /** Keys with a refresh currently running — ONE in-flight per key (spec). */
     private val refreshInFlight = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    /** Consecutive challenge responses per host (Phase 8 G1, 3-strike rule). */
+    private val challengeStrikes = java.util.concurrent.ConcurrentHashMap<String, AtomicInteger>()
+
+    /**
+     * Phase 8 G1: counts one challenge for [host]; 3 IN A ROW (any
+     * non-challenge outcome resets the row) stops ONLINE interception of
+     * that host for the rest of the run — the WebView then loads everything
+     * from that host itself. Never throws.
+     */
+    private fun noteChallengeStrike(host: String) {
+        try {
+            val counter = challengeStrikes.computeIfAbsent(host) { AtomicInteger(0) }
+            if (counter.incrementAndGet() >= Policy.MAX_CHALLENGE_STRIKES) {
+                diagnostics.blockHostForChallenges(host)
+            }
+        } catch (e: Exception) {
+            // never a crash source
+        }
+    }
+
+    /** A non-challenge outcome from [host] resets its consecutive-challenge row. */
+    private fun resetChallengeStrikes(host: String) {
+        try { challengeStrikes.get(host)?.set(0) } catch (e: Exception) { /* best-effort */ }
+    }
 
     /**
      * Schedules ONE background refresh of a just-served cache-first entry:
