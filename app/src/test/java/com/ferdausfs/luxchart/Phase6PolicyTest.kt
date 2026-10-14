@@ -159,7 +159,7 @@ class Phase6PolicyTest {
     // ---- version (single source of truth) ----------------------------------------------
 
     @Test
-    fun `versionName source of truth is 1_8_0`() {
+    fun `versionName source of truth is 1_9_0`() {
         // Android JVM unit tests run with the module dir (app/) as working dir;
         // check both layouts so the test is independent of the runner's cwd.
         val gradle = listOf(
@@ -167,6 +167,6 @@ class Phase6PolicyTest {
             java.io.File("app/build.gradle.kts")
         ).firstOrNull { it.exists() }
         assertTrue("app/build.gradle.kts not reachable from test working dir", gradle != null)
-        assertTrue(gradle!!.readText().contains("APP_VERSION_NAME = \"1.8.0\""))
+        assertTrue(gradle!!.readText().contains("APP_VERSION_NAME = \"1.9.0\""))
     }
 }

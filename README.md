@@ -66,15 +66,63 @@ Two layers cooperate:
   online (plus DOM storage / IndexedDB / service-worker data) is served.
 - **Tier 2** — the app intercepts GET requests to `luxalgo.com` hosts
   (private versioned dir `files/swr-cache/v1`, key =
-  `METHOD|normalized-URL` SHA-256) and is **CACHE-FIRST ALSO WHILE ONLINE**
-  (Phase 7):
+  `METHOD|normalized-URL` SHA-256 with a per-login generation — see below)
+  and is **CACHE-FIRST ALSO WHILE ONLINE** (Phase 7):
   - a stored entry is served instantly (counted as a hit), online or offline;
-  - static assets (js/css/fonts/images/wasm/svg/html) are never revalidated;
+  - static assets (js/css/fonts/images/wasm/svg/html) are served as-is and,
+    since Phase 8 (G2), revalidate in the BACKGROUND only after a **7-day
+    TTL** via conditional GET (If-None-Match / If-Modified-Since): a 304
+    refreshes the saved-at timestamp, a 200 overwrites the entry — still
+    nothing is ever deleted, and serving is always instant;
   - API-like data (json/ndjson/msgpack/protobuf/text-plain) is served from
     the store and refreshed ONCE in the background (private executor, one
     in-flight per key) so the stored copy is fresh for NEXT time;
   - no entry → fetched, stored atomically (body tmp-file + rename first,
     meta with the exact body length last), then returned.
+
+**Phase 8 — BUG B fix (relaxed cache key):** chart candle requests carry a
+moving time window (`from`/`to`/`countback` …), so their EXACT key never
+repeats — that is why switching timeframes used to re-download. Every
+store now also publishes a small relaxed-key POINTER that strips the whole
+time-window family (`from`, `to`, `countback`, `since`, `until`, `start`,
+`end`, …) while keeping symbol/resolution/type/path. OFFLINE, an exact-key
+miss falls back to that pointer (latest saved data for that
+symbol+timeframe, decision `HIT-RELAXED`); ONLINE serving stays exact-key
+cache-first + background refresh. A non-blocking **"Saved data" chip**
+fades in when chart data is served from the store, shows **"Updating…"**
+while the background refresh runs, and settles back — no layout shift,
+touches pass through, reduced-motion aware.
+
+**Phase 8 — Cloudflare challenge guard (G1):** the Tier-2 fetch has a
+different TLS fingerprint than Chromium, so Cloudflare can answer it with
+403/429/503 challenge walls the WebView would never see. Those responses
+are never stored, are counted (`challenge skips` in diagnostics), and are
+returned as `null` so the WebView re-fetches with its own network stack.
+Three challenges IN A ROW for one host stop intercepting that host for the
+rest of the run (decision `SKIP:challenge-host`).
+
+**Phase 8 — per-login cache generation (G3):** every cache key embeds a
+generation number persisted in SharedPreferences. It is bumped on logout
+navigation, on session-cookie loss and by "Clear saved data". Old-generation
+entries become unreachable (IGNORED — never auto-deleted) so a new login
+never reads the previous login's data. Single-user trade-off: within one
+login the cache is intentionally shared across pages of the app
+(app-private storage, device-owner only).
+
+**JS bridge hardening (G4):** `LuxBridge` (error page) acts only while the
+error page is showing, and Clear-saved-data asks for a native confirmation
+dialog first; `LuxBlob` acts only while a luxalgo page is the main frame
+and sanitizes page-supplied file names (no separators, no `..`, no control
+characters, 80-char cap). The canvas-selection lock is now also injected at
+document start (`androidx.webkit` 1.12.1, pinned) for luxalgo origins only.
+
+**Chart-cache report (evidence tool):** the diagnostics dialog has a
+**Copy chart report** action: the last 120 chart-like luxalgo requests
+(time, method, host+path, query KEY NAMES only, status, decision, and
+`key:SEEN/NEW` — a moving time window always reads NEW, which is exactly
+the BUG B evidence; POST chart requests show `SKIP:non-GET`, the evidence
+for the B2 decision). Paste it to the developer when reporting chart
+issues.
 
 **SAVED DATA STAYS UNTIL I CLEAR IT.** Nothing is deleted automatically —
 the old LRU eviction is gone. When saved data reaches the **4 GB** cap, NEW
@@ -102,15 +150,20 @@ to someone, clear saved data first.
 
 **Known limitations (by design, documented for AGENT_LOG):**
 - **POST bodies and WebSocket traffic are not cacheable via
-  shouldInterceptRequest** — request bodies never reach the interceptor and
-  `ws://`/`wss://` upgrades are skipped; live-streaming features need
-  internet.
+  shouldInterceptRequest** (Phase 8 B3 unchanged) — request bodies never
+  reach the interceptor and `ws://`/`wss://` upgrades are skipped
+  (`SKIP:websocket` in the request log); live WebSocket chart feeds and any
+  feature the site fetches via POST cannot be saved by this layer. If the
+  chart's candles actually arrive over POST/GraphQL (the chart-cache report
+  shows the method column), a page-level fetch/XHR capture (B2) is the
+  follow-up — deliberately NOT built without that evidence.
 - **Page-side recomputation (indicators) is the site's own JS** — the app
   can cache indicator code and input data, but values the page's JS
   recomputes appear only when that JS runs; the app cannot force it offline.
-- Cache-first means static assets stay until you clear: after a site
-  redesign use "Clear saved data" once (API data refreshes itself in the
-  background; static assets intentionally never do).
+- Cache-first means static assets stay until you clear (after a site
+  redesign use "Clear saved data" once); since Phase 8 they are
+  background-revalidated after the 7-day TTL, but a stale copy is never
+  deleted and is always served instantly while the revalidation runs.
 - Sensitive **PATH segments** (auth, oauth, oauth2, login, logout, signin,
   signup, token, tokens, session, sessions, payment, payments, checkout) are
   never cached — path-segment equality only, NEVER the host, NEVER the query.
@@ -125,7 +178,15 @@ to someone, clear saved data first.
   to the CookieManager.
 - Cache keys ignore noisy query params (`_`, `t`, `ts`, `_t`, `timestamp`,
   `cb`, `cachebust`, `nocache`, `rnd`, `random`) so cache-buster URLs share
-  one entry; all other params (symbol/resolution/from/to/…) are kept.
+  one entry; all other params (symbol/resolution/from/to/…) are kept in the
+  EXACT key (the RELAXED key additionally strips the time-window family —
+  see the Phase 8 BUG B section above).
+- **Lifecycle & display (G5/G7):** the WebView pauses with the Activity
+  (`onPause`/`onResume`, webview-local only — `pauseTimers` is NOT called
+  so in-page price-alert timers keep running) and landscape draws into
+cutouts (`SHORT_EDGES` on API 28+, insets union systemBars + displayCutout
++ ime). Back on the error page first goes back to a real http(s) history
+entry when one exists (G6).
 - Corrupt entries (stored length mismatch on read) are deleted and treated
   as a plain MISS — never an exception, never counted toward the
   3-failure disable.
@@ -176,9 +237,20 @@ Secret values are never printed. The keystore is never committed.
 
 ## Start URL
 `https://vela.luxalgo.com/chart` — defined once (`START_URL` in
-`MainActivity.kt`); used for first launch, error-retry and WebView
-re-creation. Navigation allow-list covers it (`vela.luxalgo.com` is a
-`luxalgo.com` subdomain).
+`MainActivity.kt`); used for the very first launch ever, error-retry and
+WebView re-creation. Since Phase 8 (A1) a COLD launch instead restores the
+last real page when it is restorable (https + allow-listed host + no
+sensitive path segment — `Policy.restoreAllowed`), so the user returns to
+their chart/symbol/timeframe. Navigation allow-list covers everything
+(`vela.luxalgo.com` is a `luxalgo.com` subdomain).
+
+## Scope
+`Tier2Cache.kt` (~1.6k lines) is the entire cache engine: keying (exact /
+relaxed / shell, generation-scoped), cache-first serving, background
+refresh + TTL revalidation, challenge skip, atomic storage, integrity,
+diagnostics + request/chart logs. `Policy.kt` holds every pure rule (all
+JVM-tested). No heavy dependencies beyond `androidx.webkit` (pinned 1.12.1,
+used for document-start injection).
 
 ## Project rules
 - `applicationId` `com.ferdausfs.luxchart` is permanent — never change
