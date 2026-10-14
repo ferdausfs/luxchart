@@ -112,6 +112,16 @@ class MainActivity : ComponentActivity() {
     /** Tier-2 offline cache (stale-while-revalidate, app-private). */
     private var tier2Cache: Tier2Cache? = null
 
+    /**
+     * Desktop UA captured ONCE on the main thread in [configureWebView].
+     * Hotfix 1.6.1 (root cause): `shouldInterceptRequest` runs on a WebView
+     * IO thread where ANY WebView/WebSettings access throws
+     * "All WebView methods must be called on the same thread" — the 1.6.0
+     * launch crash. Read it here, never from the WebView.
+     */
+    @Volatile
+    private var requestUserAgent: String? = null
+
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
     private var pendingDownload: PendingDownload? = null
     private var pendingBlob: PendingBlob? = null
@@ -427,6 +437,9 @@ class MainActivity : ComponentActivity() {
             // Desktop mode with the device's REAL WebView Chrome major version
             // (pure builder in Policy.kt, unit-tested) — never a hardcoded UA.
             userAgentString = Policy.desktopUa(WebSettings.getDefaultUserAgent(this@MainActivity))
+            // Hotfix 1.6.1: capture the final UA NOW, on the main thread, for
+            // the Tier-2 interceptor (it must never read WebSettings itself).
+            requestUserAgent = userAgentString
             textZoom = 100
             mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
             // Feature 6: WebView must not steal pinch/pan from the chart canvas.
@@ -462,11 +475,16 @@ class MainActivity : ComponentActivity() {
             // is fully thread-safe and ALWAYS returns null on any doubt.
             // Returns null for everything it does not own (third-party,
             // auth, non-GET, streaming…): the WebView then loads normally.
+            //
+            // THREAD RULE (hotfix 1.6.1, root-cause fix): this callback is NOT
+            // on the main thread, so it must NEVER touch `view`, `webView` or
+            // any WebSettings — that was the 1.6.0 launch crash. The UA comes
+            // from @Volatile requestUserAgent, captured in configureWebView.
             return tier2Cache?.intercept(
                 request.method,
                 request.url.toString(),
                 request.requestHeaders,
-                view.settings.userAgentString
+                requestUserAgent
             )
         }
 
@@ -508,6 +526,9 @@ class MainActivity : ComponentActivity() {
             view: WebView,
             detail: RenderProcessGoneDetail
         ): Boolean {
+            // THREAD AUDIT (hotfix 1.6.1): this callback is delivered on the
+            // main thread — touching the WebView here is safe. The only
+            // IO-thread callback in this client is shouldInterceptRequest.
             // The WebView renderer died (OOM, GPU driver, site bug). Returning
             // false would kill the whole app — return true, destroy the dead
             // WebView and rebuild an identical one that reloads the last URL.
