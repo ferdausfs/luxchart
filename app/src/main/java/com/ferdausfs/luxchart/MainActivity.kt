@@ -99,6 +99,10 @@ class MainActivity : ComponentActivity() {
     private lateinit var progressBar: ProgressBar
     private var offlineBanner: TextView? = null
 
+    /** Phase 8 UI: non-blocking "Saved data" / "Updating…" pill. */
+    private var savedDataChip: TextView? = null
+    private var savedChipHideRunnable: Runnable? = null
+
     private var contentReady = false
     private var contentRevealed = false
     private var errorShowing = false
@@ -366,6 +370,21 @@ class MainActivity : ComponentActivity() {
             isOnline = { isOnline },
             cookieHeader = { url -> CookieManager.getInstance().getCookie(url) },
             cacheGeneration = { cacheGeneration() },
+            onCacheServed = { apiLike, refreshing ->
+                runOnUiThread {
+                    when {
+                        apiLike && refreshing ->
+                            showChip(getString(R.string.chip_updating), 2600)
+                        apiLike ->
+                            showChip(getString(R.string.chip_saved_data), 1600)
+                    }
+                }
+            },
+            onRefreshComplete = {
+                runOnUiThread {
+                    showChip(getString(R.string.chip_saved_data), 1200)
+                }
+            },
             onLimitReached = {
                 runOnUiThread {
                     Toast.makeText(
@@ -538,6 +557,66 @@ class MainActivity : ComponentActivity() {
             true
         }
         rootLayout.addView(offlineBanner, 1)
+
+        // Phase 8 UI: the "Saved data" / "Updating…" chip. A plain overlay
+        // TextView: NOT clickable, NOT focusable — touches pass straight
+        // through to the charts, and it never causes a layout shift.
+        val chip = TextView(this).apply {
+            textSize = 12f
+            setTextColor(CHIP_SAVED_TEXT)
+            background = android.graphics.drawable.GradientDrawable().apply {
+                cornerRadius = dp(18).toFloat()
+                setColor(CHIP_BG)
+                setStroke(dp(1), CHIP_STROKE)
+            }
+            setPadding(dp(12), dp(5), dp(12), dp(5))
+            visibility = View.GONE
+            alpha = 0f
+        }
+        chip.layoutParams = FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+            Gravity.TOP or Gravity.END
+        ).apply { setMargins(0, dp(10), dp(10), 0) }
+        savedDataChip = chip
+        rootLayout.addView(chip, 2)
+    }
+
+    /**
+     * Phase 8 UI: shows the pill with a fade-in, holds it, then fades it
+     * out. Replaces any pending hide / current text ("Updating…" settling
+     * to "Saved data" is a text swap, not a re-fade). Reduced motion shows
+     * and hides instantly. No layout shift: overlay only.
+     */
+    private fun showChip(text: String, holdMs: Long) {
+        val chip = savedDataChip ?: return
+        savedChipHideRunnable?.let { rootLayout.removeCallbacks(it) }
+        chip.text = text
+        chip.setTextColor(
+            if (text == getString(R.string.chip_updating)) CHIP_UPDATING_TEXT else CHIP_SAVED_TEXT
+        )
+        if (chip.visibility != View.VISIBLE) {
+            chip.visibility = View.VISIBLE
+            if (reducedMotion) {
+                chip.alpha = 1f
+            } else {
+                chip.animate().alpha(1f).setDuration(180).start()
+            }
+        }
+        savedChipHideRunnable = Runnable { hideChip() }
+        rootLayout.postDelayed(savedChipHideRunnable, holdMs)
+    }
+
+    private fun hideChip() {
+        val chip = savedDataChip ?: return
+        if (reducedMotion) {
+            chip.visibility = View.GONE
+            chip.alpha = 0f
+        } else {
+            chip.animate().alpha(0f).setDuration(220)
+                .withEndAction {
+                    chip.visibility = View.GONE
+                }.start()
+        }
     }
 
     /**
@@ -1655,5 +1734,9 @@ class MainActivity : ComponentActivity() {
         private val PROGRESS_BG_COLOR = 0xFF1E293B.toInt()
         private val BANNER_BG_COLOR = 0xFF334155.toInt()
         private val BANNER_TEXT_COLOR = 0xFFFCD34D.toInt()
+        private val CHIP_BG = 0xCC0F172A.toInt()
+        private val CHIP_STROKE = 0xFF1E293B.toInt()
+        private val CHIP_SAVED_TEXT = 0xFF5EEAD4.toInt()
+        private val CHIP_UPDATING_TEXT = 0xFFFCD34D.toInt()
     }
 }

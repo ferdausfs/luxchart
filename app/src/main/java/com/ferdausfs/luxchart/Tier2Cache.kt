@@ -45,6 +45,16 @@ class Tier2Cache(
     private val maxSingleResponseBytes: Int = DEFAULT_MAX_SINGLE_RESPONSE,
     private val onLimitReached: (() -> Unit)? = null,
     /**
+     * Phase 8 UI: fired when a stored entry is SERVED from saved data.
+     * [apiLike] = it was chart/data (not a static asset); [refreshing] = a
+     * background refresh was just scheduled for it. Used to drive the
+     * non-blocking "Saved data" / "Updating…" chip. May be called from a
+     * WebView IO thread — the listener must hop to the main thread itself.
+     */
+    private val onCacheServed: ((apiLike: Boolean, refreshing: Boolean) -> Unit)? = null,
+    /** Phase 8 UI: fired when a background refresh finishes writing. */
+    private val onRefreshComplete: (() -> Unit)? = null,
+    /**
      * Phase 8 G3: the per-login CACHE GENERATION. Bumped on logout
      * detection, session-cookie loss and "Clear saved data". Every cache
      * key (exact, relaxed, shell) embeds it, so a new login starts a clean
@@ -366,9 +376,10 @@ class Tier2Cache(
                 val hit = readFromDisk(method, url)
                 if (hit != null) {
                     diagnostics.cacheFirstHits.incrementAndGet()
-                    // NB: the null-smart-cast of `key` from the if-condition
-                    // does NOT reach the else-if branch, so the guard is
-                    // repeated there (Kotlin compile error 1.9.0 run #48).
+                    // Phase 8 UI: drive the Saved-data/Updating chip.
+                    val apiLike = Policy.isApiLikeType(hit.contentType)
+                    val refreshing = apiLike && key != null
+                    try { onCacheServed?.invoke(apiLike, refreshing) } catch (e: Exception) { }
                     if (key != null && Policy.isApiLikeType(hit.contentType)) {
                         scheduleBackgroundRefresh(method, url, key, requestHeaders ?: emptyMap(), userAgent)
                     } else if (
@@ -400,6 +411,10 @@ class Tier2Cache(
                         method, url, served.status, served.contentType,
                         served.byteCount.toLong(), if (hit != null) "HIT" else "HIT-RELAXED"
                     )
+                    // Phase 8 UI: offline saved-data serve of chart data.
+                    if (Policy.isApiLikeType(served.contentType)) {
+                        try { onCacheServed?.invoke(true, false) } catch (e: Exception) { }
+                    }
                     served.response
                 } else {
                     // Offline with nothing saved: the WebView fails naturally
@@ -1182,6 +1197,9 @@ class Tier2Cache(
                     // Background refresh is best-effort — never a crash source.
                 } finally {
                     refreshInFlight.remove(key)
+                    // Phase 8 UI: the "Updating…" chip can settle back to
+                    // "Saved data" now (listener never throws).
+                    try { onRefreshComplete?.invoke() } catch (e: Exception) { }
                 }
             }
         } catch (e: Exception) {
