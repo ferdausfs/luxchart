@@ -10,6 +10,76 @@ secret values in this file. Secret *names* and file *names* are allowed.
 
 ---
 
+## Phase 6 — 2026-10-14 — OFFLINE main-page shell caching: airplane mode opens the saved chart shell (versionName 1.7.0)
+
+- **Agent/Tool:** GLM (Super Z CLI) acting as senior Android engineer
+- **Feature:** OFFLINE "main page shell" caching — with Airplane mode the app
+  no longer lands on "Connection lost / ERR_INTERNET_DISCONNECTED": the main
+  HTML document of vela.luxalgo.com/chart (never saved before: no-store +
+  main frames not intercepted since 1.6.1) is now captured in the background
+  while online and served from disk while offline. SAFE BY CONSTRUCTION:
+  online navigation is NEVER touched.
+- **What changed (one commit per item):**
+  1. Shadow fetch (online only): after a main-frame onPageFinished on an
+     allow-listed https URL (never auth/login/token/session/payment), ONE
+     background request per URL per 10 min on a private executor —
+     CookieManager cookies + the runtime desktop UA (captured on the main
+     thread, no WebView access off-main), Accept: text/html,
+     instanceFollowRedirects=false, 10 s timeouts. Stores ONLY HTTP 200 +
+     text/html + <= 2 MB; never 3xx, never Set-Cookie (ignored on purpose),
+     never Cloudflare/login bodies (pure Policy.SHELL_CHALLENGE_MARKERS:
+     "just a moment", "cf-chl", "_cf_chl", "challenge-platform", …).
+  2. Offline serving: shouldInterceptRequest now serves main frames ONLY
+     when the device is offline + GET + allow-listed host + shell stored —
+     exact match first, then SPA deep-link fallback to the start-URL shell
+     (same host, path inside /chart; boundary-safe, pure
+     Policy.spaShellFallback). Response = 200 text/html utf-8 + the safe
+     stored headers. Online main frames still return null immediately;
+     everything stays behind try/catch(Throwable)->null and the crash-loop
+     kill switch.
+  3. Storage: shells reuse the Tier-2 disk cache (same app-private versioned
+     dir, LRU eviction, 500 MB cap) with a separate "SHELL|" key namespace
+     (SHA-256 of the normalized URL — fragment dropped, sorted query).
+     Set-Cookie/Cookie/Authorization can never reach the persisted meta;
+     Clear-saved-data wipes shells too and resets the shadow-fetch throttle.
+  4. Banner honesty: "Offline: showing saved data" only while a saved
+     page/resources are actually served (marker reset per navigation in
+     onPageStarted, set by the interceptor, refreshed via runOnUiThread —
+     TextView only). Offline + nothing saved => banner AND error page say
+     "Offline: nothing saved for this page yet. Open it once while online."
+  5. Diagnostics: banner long-press now includes a shell section — offline
+     shell-serve count, last shadow-fetch result (stored / skipped:reason /
+     failed:code), stored shells as host+path (no query) with size + age.
+  6. JVM tests (Phase6PolicyTest): eligibility, key normalization (fragment
+     behavior incl. RFC-strict URI rejection), challenge markers, throttle
+     boundaries, SPA fallback, version source-of-truth; versionName
+     1.6.1 -> 1.7.0. Signing/CI/applicationId untouched.
+- **Touched files:** `Policy.kt` (pure shell rules), `Tier2Cache.kt`
+  (shadow fetch + store/serve shell + diagnostics + clear), `MainActivity.kt`
+  (onPageFinished hook, main-frame offline branch, honest banner/error
+  wording), `strings.xml`, `app/build.gradle.kts`,
+  `app/src/test/.../Phase6PolicyTest.kt` (new)
+- **Commit hashes:** `3160564` item 1 (run #22 green) -> `7b67dbc` item 2
+  (run #23) -> `3dcb7b2` item 3 (run #24) -> `5875757` item 4 (run #25) ->
+  `605564f` item 5 (run #26) -> `8e9d441` item 6 (run #27 FAILURE — two test
+  bugs: marker spelled "cf-chl" missed Cloudflare's underscore variant
+  "_cf_chl_opt", and the fragment test used a second '#', which
+  java.net.URI refuses by RFC) -> fix `98ddfc1` (run #28 SUCCESS, JVM tests
+  green, artifact `LuxChart-release-apk-28`, versionName 1.7.0)
+  - this log commit: recorded as repository HEAD at push time
+- **Pending items:** none from the Phase 6 scope. Watchlist: shells have no
+  TTL by design (stale shell is still better than no shell; "Clear saved
+  data" is the reset); subresource offline coverage is unchanged Tier-2
+  behavior (shell renders, data APIs come from Tier-2/WebView cache).
+- **Notes for next agent:** The interceptor's main-frame branch runs ONLY
+  offline — never add online main-frame interception (Cloudflare/logins).
+  Shell storage is luxalgo-safe via Policy.shellFetchEligible (https +
+  allow-list + sensitive-token rejection); keep new shell rules PURE in
+  Policy.kt with JVM tests. Do not touch applicationId
+  `com.ferdausfs.luxchart`; signing/CI unchanged.
+
+---
+
 ## Hotfix 1.6.1 — 2026-10-14 — launch-crash fix: IO-thread WebView access + Tier-2 hardening + crash visibility (versionName 1.6.1)
 
 - **Agent/Tool:** GLM (Super Z CLI) acting as senior Android engineer
