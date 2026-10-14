@@ -70,6 +70,9 @@ class Tier2Cache(
         /** Phase 8 G1: challenge/rate-limit responses skipped (WebView takes over). */
         val challengeSkips = AtomicLong()
 
+        /** Phase 8 G2: background TTL revalidations (304 touched / 200 overwritten). */
+        val revalidations = AtomicLong()
+
         /** Hosts whose interception is stopped for the run (3 challenges in a row). */
         private val challengeBlocked = java.util.Collections.newSetFromMap(
             java.util.concurrent.ConcurrentHashMap<String, Boolean>()
@@ -111,6 +114,7 @@ class Tier2Cache(
                 sb.append("  challenge-blocked hosts: ").append(blocked.joinToString(", "))
             }
             sb.append('\n')
+            sb.append("static TTL revalidations: ").append(revalidations.get()).append('\n')
             sb.append("bytes served from cache: ").append(fmt(bytesServed.get())).append('\n')
             sb.append("disk: ").append(fmt(diskBytes.get())).append('\n')
             sb.append("consecutive fetch failures: ").append(failures.get()).append('\n')
@@ -353,6 +357,16 @@ class Tier2Cache(
                     diagnostics.cacheFirstHits.incrementAndGet()
                     if (key != null && Policy.isApiLikeType(hit.contentType)) {
                         scheduleBackgroundRefresh(method, url, key, requestHeaders ?: emptyMap(), userAgent)
+                    } else if (
+                        Policy.staticNeedsRevalidate(
+                            hit.contentType, hit.savedAtMs,
+                            System.currentTimeMillis(), Policy.STATIC_REVALIDATE_TTL_MS
+                        )
+                    ) {
+                        // Phase 8 G2: a static asset older than the 7-day TTL is
+                        // revalidated in the background (conditional GET) —
+                        // serving stays instant, nothing is ever deleted.
+                        scheduleBackgroundRevalidate(method, url, key, requestHeaders ?: emptyMap(), userAgent)
                     }
                     recordRequest(method, url, hit.status, hit.contentType, hit.byteCount.toLong(), "HIT")
                     return hit.response
@@ -870,7 +884,8 @@ class Tier2Cache(
         val response: WebResourceResponse,
         val contentType: String?,
         val byteCount: Int,
-        val status: Int
+        val status: Int,
+        val savedAtMs: Long = 0L
     )
 
     /**
@@ -938,6 +953,7 @@ class Tier2Cache(
             diagnostics.bytesServed.addAndGet(bytes.size.toLong())
             val status = meta.optInt("status", 200)
             val contentType = meta.optString("content-type", null)
+            val savedAtMs = meta.optLong("saved-at", 0L)
             val mime = contentType?.substringBefore(';')?.trim()?.ifEmpty { null }
             val charset = contentType
                 ?.split(';')
@@ -949,7 +965,7 @@ class Tier2Cache(
             )
             val headers = meta.optJSONObject("headers")
             headers?.keys()?.forEach { name -> response.responseHeaders[name] = headers.getString(name) }
-            DiskHit(response, contentType, bytes.size, status)
+            DiskHit(response, contentType, bytes.size, status, savedAtMs)
         } catch (e: Exception) {
             // Corrupt/unreadable meta => delete the pair, count a MISS —
             // never an exception to the caller, never a failure count.
@@ -990,6 +1006,143 @@ class Tier2Cache(
     /** A non-challenge outcome from [host] resets its consecutive-challenge row. */
     private fun resetChallengeStrikes(host: String) {
         try { challengeStrikes.get(host)?.set(0) } catch (e: Exception) { /* best-effort */ }
+    }
+
+    // ---- Static-asset TTL revalidation (Phase 8 G2) -----------------------------
+
+    /**
+     * Schedules ONE background conditional revalidation of a just-served
+     * static entry older than the TTL. One in-flight per key (shares the
+     * refresh pool + guard). Never throws; nothing touches the WebView.
+     */
+    private fun scheduleBackgroundRevalidate(
+        method: String,
+        url: String,
+        key: String,
+        requestHeaders: Map<String, String>,
+        userAgent: String?
+    ) {
+        if (!refreshInFlight.add(key)) return
+        try {
+            refreshExecutor.execute {
+                try {
+                    revalidateEntry(method, url, key, requestHeaders, userAgent)
+                } catch (e: Exception) {
+                    // best-effort — the stored entry stays valid regardless
+                } finally {
+                    refreshInFlight.remove(key)
+                }
+            }
+        } catch (e: Exception) {
+            refreshInFlight.remove(key)
+        }
+    }
+
+    /**
+     * Conditional GET with If-None-Match / If-Modified-Since taken from the
+     * STORED entry's persisted validators. 304 => refresh the saved-at
+     * timestamp (and any new validators on the 304 itself); 200 => overwrite
+     * the entry through the normal store path; anything else (incl. 4xx/5xx
+     * and challenges) => leave the entry untouched. NOTHING is ever deleted.
+     */
+    private fun revalidateEntry(
+        method: String,
+        url: String,
+        key: String,
+        requestHeaders: Map<String, String>,
+        userAgent: String?
+    ) {
+        val stored = readStoredMetaForKey(key) ?: return
+        val headersJson = stored.optJSONObject("headers") ?: return
+        val etag = headersJson.optString("ETag", "").takeIf { it.isNotEmpty() }
+        val lastModified = headersJson.optString("Last-Modified", "").takeIf { it.isNotEmpty() }
+        if (etag == null && lastModified == null) {
+            // No validators to negotiate with — a plain background refresh is
+            // the only option; leave that to the normal refresh path later.
+            return
+        }
+        val conn = try {
+            (URL(url).openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = CONNECT_TIMEOUT_MS
+                readTimeout = READ_TIMEOUT_MS
+                instanceFollowRedirects = false
+                userAgent?.let { setRequestProperty("User-Agent", it) }
+                cookieHeader(url)?.takeIf { it.isNotBlank() }
+                    ?.let { setRequestProperty("Cookie", it) }
+                Policy.forwardableRequestHeaders(requestHeaders).forEach { (n, v) ->
+                    setRequestProperty(n, v)
+                }
+                etag?.let { setRequestProperty("If-None-Match", it) }
+                lastModified?.let { setRequestProperty("If-Modified-Since", it) }
+            }
+        } catch (e: Exception) {
+            return
+        }
+        try {
+            when (conn.responseCode) {
+                304 -> {
+                    // Still valid — refresh the timestamp so the TTL restarts.
+                    touchEntryTimestamp(key)
+                    diagnostics.revalidations.incrementAndGet()
+                    recordRequest(method, url, 304, null, -1, "REVALIDATED")
+                }
+                200 -> {
+                    val headers = conn.headerFields.filterKeys { it != null }
+                        .mapKeys { it.key as String }
+                    val body = readCapped(conn.inputStream, maxSingleResponseBytes)
+                    if (body.size <= maxSingleResponseBytes &&
+                        Policy.shouldStoreResponse(200, headers)
+                    ) {
+                        if (storeToDisk(key, url, 200, headers, body)) {
+                            diagnostics.revalidations.incrementAndGet()
+                            recordRequest(method, url, 200, null, body.size.toLong(), "REVALIDATED")
+                        }
+                    }
+                }
+                else -> {
+                    // 3xx/challenge/4xx/5xx: the stored entry stays untouched
+                    // (never deleted) and will be retried after the next TTL.
+                    recordRequest(method, url, conn.responseCode, null, -1, "REVALIDATE-KEEP")
+                }
+            }
+        } catch (e: Exception) {
+            // network hiccup — the entry stays as-is
+        } finally {
+            runCatching { conn.disconnect() }
+        }
+    }
+
+    /** Reads the persisted meta JSON for an exact key, or null. */
+    private fun readStoredMetaForKey(key: String): JSONObject? = try {
+        val metaFile = File(dir, "$key.meta")
+        if (metaFile.exists()) JSONObject(metaFile.readText()) else null
+    } catch (e: Exception) {
+        null
+    }
+
+    /**
+     * Refreshes ONLY the saved-at field of an entry's meta (304 revalidation):
+     * atomic tmp+rename, body untouched. Best-effort — a failed touch just
+     * means the entry will be revalidated again after the next TTL.
+     */
+    private fun touchEntryTimestamp(key: String) {
+        synchronized(lock) {
+            try {
+                val metaFile = File(dir, "$key.meta")
+                if (!metaFile.exists()) return
+                val meta = JSONObject(metaFile.readText())
+                meta.put("saved-at", System.currentTimeMillis())
+                val tmp = File(dir, "$key.meta.tmp")
+                tmp.writeText(meta.toString())
+                if (!tmp.renameTo(metaFile)) {
+                    metaFile.delete()
+                    if (!tmp.renameTo(metaFile)) runCatching { tmp.delete() }
+                }
+            } catch (e: Exception) {
+                // best-effort
+            }
+        }
     }
 
     /**
@@ -1475,7 +1628,9 @@ class Tier2Cache(
             "Access-Control-Max-Age",
             "Access-Control-Allow-Credentials",
             "Timing-Allow-Origin",
-            "X-Content-Type-Options"
+            "X-Content-Type-Options",
+            "ETag",
+            "Last-Modified"
         )
     }
 }

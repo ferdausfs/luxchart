@@ -303,6 +303,37 @@ object Policy {
         return API_LIKE_TYPES.any { mime.startsWith(it) }
     }
 
+    // ---- Static-asset TTL revalidation (Phase 8 G2, pure, tested) --------------
+
+    /**
+     * Static-asset revalidation TTL (Phase 8 G2): 7 days. After this age a
+     * static entry is revalidated IN THE BACKGROUND with a conditional GET
+     * (If-None-Match / If-Modified-Since): 304 refreshes the timestamp,
+     * 200 overwrites. STILL NO automatic deletion — Clear saved data is the
+     * only delete path, and a stale entry is served instantly while the
+     * revalidation runs.
+     */
+    const val STATIC_REVALIDATE_TTL_MS = 7L * 24 * 60 * 60 * 1000
+
+    /**
+     * TRUE => this served entry is a STATIC asset older than [ttlMs] and must
+     * be revalidated in the background. API-like types never take this path
+     * (they refresh after every online cache-first serve, Phase 7). Entries
+     * without a saved timestamp (legacy v1.7.x/1.8.0 writes) are left alone —
+     * their age is unknown, and they will gain a timestamp the next time
+     * their exact URL is stored again. Pure + tested.
+     */
+    fun staticNeedsRevalidate(
+        contentType: String?,
+        savedAtMs: Long,
+        nowMs: Long,
+        ttlMs: Long
+    ): Boolean {
+        if (isApiLikeType(contentType)) return false
+        if (savedAtMs <= 0L) return false
+        return nowMs - savedAtMs > ttlMs
+    }
+
     /**
      * Phase 7 item 2 — the ONLY size rule for saved data. TRUE => a new
      * store of [incomingBytes] fits under [capBytes] given [currentBytes]

@@ -219,4 +219,47 @@ class Phase8PolicyTest {
         // Pure-rule sanity: the constant matches the spec (3).
         assertEquals(3, Policy.MAX_CHALLENGE_STRIKES)
     }
+
+    // ---- G2: static-asset TTL revalidation --------------------------------------
+
+    @Test
+    fun `api-like types never take the static TTL path`() {
+        val old = 0L // absurdly old
+        assertFalse(
+            Policy.staticNeedsRevalidate(
+                "application/json", old, old + Policy.STATIC_REVALIDATE_TTL_MS + 1,
+                Policy.STATIC_REVALIDATE_TTL_MS
+            )
+        )
+        assertFalse(
+            Policy.staticNeedsRevalidate(
+                "application/json; charset=utf-8", old, old + 100 * Policy.STATIC_REVALIDATE_TTL_MS,
+                Policy.STATIC_REVALIDATE_TTL_MS
+            )
+        )
+    }
+
+    @Test
+    fun `static assets revalidate only after the TTL`() {
+        val saved = 1_000_000L
+        val ttl = Policy.STATIC_REVALIDATE_TTL_MS
+        // fresh: exactly TTL => not yet (strictly greater)
+        assertFalse(Policy.staticNeedsRevalidate("text/javascript", saved, saved + ttl, ttl))
+        // one ms past TTL => revalidate
+        assertTrue(Policy.staticNeedsRevalidate("text/javascript", saved, saved + ttl + 1, ttl))
+        assertTrue(Policy.staticNeedsRevalidate("image/png", saved, saved + 30L * 24 * 3600 * 1000, ttl))
+        // a custom TTL must be honoured (test seam)
+        assertTrue(Policy.staticNeedsRevalidate("text/css", saved, saved + 61_000, 60_000))
+        assertFalse(Policy.staticNeedsRevalidate("text/css", saved, saved + 60_000, 60_000))
+    }
+
+    @Test
+    fun `legacy entries without a timestamp are never revalidated`() {
+        assertFalse(
+            Policy.staticNeedsRevalidate("text/javascript", 0L, Long.MAX_VALUE / 2, ttlMs = 1000)
+        )
+        assertFalse(
+            Policy.staticNeedsRevalidate(null, 0L, Long.MAX_VALUE / 2, ttlMs = 1000)
+        )
+    }
 }
