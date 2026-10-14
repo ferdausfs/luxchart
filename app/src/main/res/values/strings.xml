@@ -7,6 +7,7 @@
     <string name="blob_saved">Saved %1$s to Downloads</string>
     <string name="blob_failed">Couldn\'t save the file</string>
     <string name="offline_banner">Offline: showing saved data</string>
+    <string name="offline_banner_nothing_saved">Offline: nothing saved for this page yet. Open it once while online.</string>
     <string name="saved_data_cleared">Saved data cleared</string>
     <string name="diag_copied">Diagnostics copied</string>
     <string name="diag_copy">Copy</string>

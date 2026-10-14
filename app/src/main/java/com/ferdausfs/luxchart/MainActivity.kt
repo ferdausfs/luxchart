@@ -510,6 +510,11 @@ class MainActivity : ComponentActivity() {
             // Track the last real page URL for crash recovery, state restore
             // and retry. Internal pages (file://) are never tracked.
             if (url != null && url.startsWith("http")) currentUrl = url
+            // Phase 6 item 4: every new main-frame navigation resets the
+            // saved-data marker until the interceptor decides (shell hit or
+            // miss). Main thread here — banner text is main-thread UI state.
+            mainFrameServedFromShell = false
+            updateOfflineBanner()
         }
 
         override fun shouldInterceptRequest(
@@ -543,6 +548,10 @@ class MainActivity : ComponentActivity() {
                         request.url.toString(), START_URL
                     )
                     mainFrameServedFromShell = served != null
+                    // Item 4: refresh the honest banner wording for THIS page.
+                    // runOnUiThread is safe from any thread; the banner is a
+                    // plain TextView — the WebView is never touched here.
+                    runOnUiThread { updateOfflineBanner() }
                     return served
                 }
                 if (tier2KilledByCrashLoop) return null
@@ -835,7 +844,15 @@ class MainActivity : ComponentActivity() {
     private fun showError(failingUrl: String, message: String?) {
         pendingErrorUrl = failingUrl
         errorShowing = true
-        showErrorPage(message)
+        // Phase 6 item 4 (banner honesty): offline with nothing saved for this
+        // page => the error page carries the honest text instead of a generic
+        // connection-lost line (the banner shows the same wording).
+        val effective = if (!isOnline && !mainFrameServedFromShell) {
+            getString(R.string.offline_banner_nothing_saved)
+        } else {
+            message
+        }
+        showErrorPage(effective)
     }
 
     /** Loads the local offline/error page (optionally with an encoded reason). */
@@ -926,7 +943,19 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun updateOfflineBanner() {
-        offlineBanner?.visibility = if (isOnline) View.GONE else View.VISIBLE
+        if (offlineBanner == null) return
+        if (isOnline) {
+            offlineBanner?.visibility = View.GONE
+        } else {
+            // Phase 6 item 4 (banner honesty): "showing saved data" ONLY while
+            // a saved page/resources are actually being served; otherwise the
+            // banner says plainly that nothing is saved for this page yet.
+            offlineBanner?.text = getString(
+                if (mainFrameServedFromShell) R.string.offline_banner
+                else R.string.offline_banner_nothing_saved
+            )
+            offlineBanner?.visibility = View.VISIBLE
+        }
     }
 
     /** Long-press on the offline banner: copyable/shareable cache diagnostics. */
