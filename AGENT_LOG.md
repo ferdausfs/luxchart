@@ -10,6 +10,56 @@ secret values in this file. Secret *names* and file *names* are allowed.
 
 ---
 
+## Phase 5 — 2026-10-14 — Offline Tier 2 (SWR disk cache) + diagnostics (versionName 1.6.0)
+
+- **Agent/Tool:** GLM (Super Z CLI) acting as senior Android engineer
+- **Feature:** Phase 5 — offline Tier 2 + diagnostics (items 12–17, owner mandate)
+- **What changed:**
+  12/13. `shouldInterceptRequest` → `Tier2Cache.intercept`: GET requests to
+     luxalgo hosts ONLY are fetched by the app (HttpURLConnection, cookies
+     attached from CookieManager, real WebView UA, `Accept-Encoding: identity`,
+     8s/15s timeouts), the response is returned to the WebView and 200s passing
+     the pure rules are stored in app-private `files/swr-cache/v1` (key =
+     SHA-256 of `METHOD|normalized URL`; normalization: lowercase scheme/host,
+     drop fragment/default-port/empty query, sort query params — all JVM
+     tested in `PolicyTest`). Stored: body, status, content-type, safe headers
+     (CORS set incl.). NEVER cached: non-GET, Authorization header, WebSocket
+     (`ws://`/`wss://`, `Upgrade: websocket`), URLs with
+     auth/login/token/session/payment, Set-Cookie responses, non-200,
+     streaming (event-stream/gRPC), non-luxalgo hosts.
+  14. Any interceptor exception returns null (WebView default). 3 consecutive
+     fetch failures auto-disable Tier 2 for the session. Network fetch outside
+     the lock; disk writes serialized; eviction async.
+  15. 500 MB LRU cap (evict to ~80%, lastModified-based, off-thread),
+     versioned directory, "Clear saved data" button on the offline/error page
+     via `LuxBridge.clearSavedData()`.
+  16. Diagnostics: hits/misses/stored/skipped counters + last 50 skipped
+     luxalgo host+path (NO query strings/cookies/tokens/bodies) exposed by
+     long-press on the offline banner → dark dialog with Copy (clipboard) /
+     Share (chooser) / Close.
+  17. README "Offline" section with the full known-limitations list (see
+     README; also: HTML shell of luxalgo pages IS stored — documented
+     deviation needed to make offline work end to end; stale-while-revalidate
+     has no TTL; 25 MB per-response cap; best-effort, logins/bot-challenges
+     cannot complete offline).
+  Lint: `./gradlew lintRelease` run once → 2 real NewApi errors fixed
+  (@RequiresApi(Q) on saveBlobMediaStore; readNBytes replaced by chunked loop
+  for minSdk 24) → 0 errors, 5 stylistic warnings left by design.
+  versionName 1.6.0.
+- **Touched files:** `Tier2Cache.kt` (new), `Policy.kt`, `PolicyTest.kt`,
+  `MainActivity.kt`, `assets/error.html`, `strings.xml`, `README.md`,
+  `app/build.gradle.kts`
+- **Commit hashes:** `a582641` (policy), `3b5ed6f` (engine+wiring),
+  `0e64ac9` (diagnostics), `a377958` (README), `771168e` (lint fixes)
+- **Build:** CI run #18 — GREEN, artifact
+  `LuxChart-release-apk-18`: https://github.com/ferdausfs/luxchart/actions/runs/38516342167
+- **Pending items:** none — all 6 phases delivered; see README limitations.
+- **Notes for next agent:** Tier-2 cache version lives in the directory name
+  (`swr-cache/v1`) — bump it when the on-disk format changes. The engine must
+  ALWAYS return null on any doubt (never break the app). Diagnostics strings
+  must stay secret-free.
+---
+
 ## Phase 4 — 2026-10-14 — Offline Tier 1 (versionName 1.5.0)
 
 - **Agent/Tool:** GLM (Super Z CLI) acting as senior Android engineer
