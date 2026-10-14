@@ -58,6 +58,15 @@ class Tier2Cache(
         /** Phase 6: offline main-frame documents served from a stored shell. */
         val shellHits = AtomicLong()
 
+        /** Phase 7 item 9: cache-first hits (stored entry served while ONLINE). */
+        val cacheFirstHits = AtomicLong()
+
+        /** Phase 7 item 9: background refreshes that really overwrote an entry. */
+        val refreshUpdates = AtomicLong()
+
+        /** Phase 7 item 9: bytes served from the disk cache (online + offline). */
+        val bytesServed = AtomicLong()
+
         private val recentSkipped = ArrayDeque<String>()
         private val ringLock = Any()
 
@@ -82,6 +91,9 @@ class Tier2Cache(
                 .append("  misses: ").append(misses.get())
                 .append("  stored: ").append(stored.get())
                 .append("  skipped: ").append(skipped.get()).append('\n')
+            sb.append("cache-first hits (online): ").append(cacheFirstHits.get())
+                .append("  background refresh updates: ").append(refreshUpdates.get()).append('\n')
+            sb.append("bytes served from cache: ").append(fmt(bytesServed.get())).append('\n')
             sb.append("disk: ").append(fmt(diskBytes.get())).append('\n')
             sb.append("consecutive fetch failures: ").append(failures.get()).append('\n')
             val recent = recentSkippedSnapshot()
@@ -138,6 +150,7 @@ class Tier2Cache(
                 val key = Policy.cacheKey(method!!, url)
                 val hit = readFromDisk(method, url)
                 if (hit != null) {
+                    diagnostics.cacheFirstHits.incrementAndGet()
                     if (key != null && Policy.isApiLikeType(hit.contentType)) {
                         scheduleBackgroundRefresh(method, url, key, requestHeaders ?: emptyMap(), userAgent)
                     }
@@ -159,7 +172,8 @@ class Tier2Cache(
         method: String,
         url: String,
         requestHeaders: Map<String, String>,
-        userAgent: String?
+        userAgent: String?,
+        background: Boolean = false
     ): WebResourceResponse? {
         val key = Policy.cacheKey(method, url) ?: return null
         val conn = try {
@@ -251,7 +265,7 @@ class Tier2Cache(
                     diagnostics.skipped.incrementAndGet()
                     return null
                 }
-                return finishBuffered(key, url, status, headers, body, storable)
+                return finishBuffered(key, url, status, headers, body, storable, background)
             }
 
             if (contentLength > maxSingleResponseBytes.toLong()) {
@@ -268,7 +282,7 @@ class Tier2Cache(
             val probe = probeRead(conn.inputStream, PROBE_WINDOW_BYTES)
             return if (probe.rest == null) {
                 conn.disconnect()
-                finishBuffered(key, url, status, headers, probe.prefix, storable)
+                finishBuffered(key, url, status, headers, probe.prefix, storable, background)
             } else {
                 resetFailures()
                 val data = java.io.SequenceInputStream(
@@ -283,25 +297,36 @@ class Tier2Cache(
         }
     }
 
-    /** Buffered 2xx: serve the bytes and (when storable) overwrite the disk entry. */
+    /**
+     * Buffered 2xx: serve the bytes and (when storable AND the write really
+     * succeeded) count it. Phase 7 item 9: "stored" now counts ONLY entries
+     * really written to disk; a background refresh that writes increments
+     * refreshUpdates instead.
+     */
     private fun finishBuffered(
         key: String,
         url: String,
         status: Int,
         headers: Map<String, List<String>>,
         body: ByteArray,
-        storable: Boolean
+        storable: Boolean,
+        background: Boolean
     ): WebResourceResponse {
         val response = buildResponse(status, headers, body)
-        diagnostics.stored.incrementAndGet()
-        resetFailures()
-        if (storable) {
+        val written = if (storable) {
             try {
                 storeToDisk(key, url, status, headers, body)
             } catch (e: Exception) {
-                // Storing must never break serving.
+                false // Storing must never break serving.
             }
+        } else {
+            false
         }
+        if (written) {
+            diagnostics.stored.incrementAndGet()
+            if (background) diagnostics.refreshUpdates.incrementAndGet()
+        }
+        resetFailures()
         return response
     }
 
@@ -579,6 +604,9 @@ class Tier2Cache(
                 }
                 diagnostics.hits.incrementAndGet()
                 resetFailures()
+                // Phase 7 item 9: count every byte the cache puts back —
+                // online cache-first and offline serving alike.
+                diagnostics.bytesServed.addAndGet(bytes.size.toLong())
                 val status = meta.optInt("status", 200)
                 val contentType = meta.optString("content-type", null)
                 val mime = contentType?.substringBefore(';')?.trim()?.ifEmpty { null }
@@ -629,7 +657,7 @@ class Tier2Cache(
         try {
             refreshExecutor.execute {
                 try {
-                    fetchAndStore(method, url, requestHeaders, userAgent)
+                    fetchAndStore(method, url, requestHeaders, userAgent, background = true)
                 } catch (e: Exception) {
                     // Background refresh is best-effort — never a crash source.
                 } finally {
