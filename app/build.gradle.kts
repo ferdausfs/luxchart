@@ -73,6 +73,9 @@ dependencies {
     implementation("androidx.core:core-ktx:1.15.0")               // edge-to-edge / insets compat
     implementation("androidx.activity:activity-ktx:1.9.3")        // OnBackPressedCallback, result APIs
     implementation("androidx.core:core-splashscreen:1.0.1")       // splash screen (feature 8)
+
+    // JVM unit tests for pure logic (Policy: UA builder / allow-list / cache rules)
+    testImplementation("junit:junit:4.13.2")
 }
 
 // Fail fast (before any task executes) when a release build is requested but

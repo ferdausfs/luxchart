@@ -317,7 +317,9 @@ class MainActivity : ComponentActivity() {
             databaseEnabled = true
             useWideViewPort = true
             loadWithOverviewMode = true
-            userAgentString = DESKTOP_USER_AGENT
+            // Desktop mode with the device's REAL WebView Chrome major version
+            // (pure builder in Policy.kt, unit-tested) — never a hardcoded UA.
+            userAgentString = Policy.desktopUa(WebSettings.getDefaultUserAgent(this@MainActivity))
             textZoom = 100
             mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
             // Feature 6: WebView must not steal pinch/pan from the chart canvas.
@@ -668,11 +670,8 @@ class MainActivity : ComponentActivity() {
         private const val KEY_CURRENT_URL = "lux.currentUrl"
         private const val MAX_RENDER_CRASHES = 3
 
-        private const val DESKTOP_USER_AGENT =
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-                "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-
-        /** Hosts (exact match or any subdomain) that stay inside the WebView. */
+        /** Hosts (exact match or any subdomain) that stay inside the WebView.
+         *  (Moves to Policy.kt as the single source of truth in the next commit.) */
         private val ALLOWED_DOMAINS = listOf(
             "luxalgo.com",
             "accounts.google.com",
