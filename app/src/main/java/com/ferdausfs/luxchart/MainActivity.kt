@@ -59,6 +59,8 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import android.app.AlertDialog
+import android.widget.Button
+import android.widget.LinearLayout
 import org.json.JSONObject
 import java.io.File
 import java.text.SimpleDateFormat
@@ -1068,29 +1070,62 @@ class MainActivity : ComponentActivity() {
             setPadding(dp(20), dp(14), dp(20), dp(4))
             setTextIsSelectable(true)
         }
-        val scroll = ScrollView(this).apply { addView(view) }
+        val scroll = ScrollView(this).apply {
+            addView(view)
+            setBackgroundColor(0xFF0A0E14.toInt())
+        }
+        // Phase 8: a second action row — the chart-cache report (BUG B/B2
+        // evidence) is copy-only, so the user can paste it to the developer.
+        val actions = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.END
+            setPadding(dp(8), dp(2), dp(8), dp(6))
+        }
+        fun actionButton(label: String, action: () -> Unit): Button =
+            Button(this, null, android.R.attr.borderlessButtonStyle).apply {
+                text = label
+                setTextColor(0xFF2DD4BF.toInt())
+                isAllCaps = false
+                setOnClickListener { action() }
+            }
+        actions.addView(actionButton(getString(R.string.diag_copy)) {
+            copyText("LuxChart diagnostics + request log", body)
+            Toast.makeText(this, R.string.diag_copied, Toast.LENGTH_SHORT).show()
+        })
+        actions.addView(actionButton(getString(R.string.diag_chart_report)) {
+            copyText("LuxChart chart-cache report", cache.chartCacheReport())
+            Toast.makeText(this, R.string.diag_chart_copied, Toast.LENGTH_SHORT).show()
+        })
+        actions.addView(actionButton(getString(R.string.diag_share)) {
+            val send = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_TEXT, body)
+                putExtra(Intent.EXTRA_TITLE, "LuxChart diagnostics + request log")
+            }
+            runCatching {
+                startActivity(Intent.createChooser(send, getString(R.string.diag_share)))
+            }
+        })
+        actions.addView(actionButton(getString(R.string.diag_close)) { })
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(0xFF0A0E14.toInt())
+            addView(scroll, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f
+            ))
+            addView(actions, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ))
+        }
         AlertDialog.Builder(this)
             .setTitle("Cache diagnostics + request log")
-            .setView(scroll)
-            .setPositiveButton(R.string.diag_copy) { _, _ ->
-                val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                cm.setPrimaryClip(
-                    ClipData.newPlainText("LuxChart diagnostics + request log", body)
-                )
-                Toast.makeText(this, R.string.diag_copied, Toast.LENGTH_SHORT).show()
-            }
-            .setNegativeButton(R.string.diag_share) { _, _ ->
-                val send = Intent(Intent.ACTION_SEND).apply {
-                    type = "text/plain"
-                    putExtra(Intent.EXTRA_TEXT, body)
-                    putExtra(Intent.EXTRA_TITLE, "LuxChart diagnostics + request log")
-                }
-                runCatching {
-                    startActivity(Intent.createChooser(send, getString(R.string.diag_share)))
-                }
-            }
-            .setNeutralButton(R.string.diag_close, null)
+            .setView(container)
             .show()
+    }
+
+    private fun copyText(label: String, text: String) {
+        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        cm.setPrimaryClip(ClipData.newPlainText(label, text))
     }
 
     // ---- Allow-list + external browser ---------------------------------------

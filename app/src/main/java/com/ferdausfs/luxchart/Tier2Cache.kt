@@ -156,10 +156,43 @@ class Tier2Cache(
     private val requestLog = ArrayDeque<RequestLogEntry>()
 
     /**
+     * Phase 8 evidence tool (BUG B): parallel ring for CHART-LIKE requests
+     * only — time, method, sanitized host+path+query-KEY-NAMES, status,
+     * decision, and whether the request's key had been seen BEFORE this call
+     * (SEEN = the exact key repeated — stable URL; NEW = first appearance —
+     * for candle GETs with a moving from/to window every line will read NEW,
+     * which IS the BUG B evidence). POST chart requests appear here too —
+     * their decision (usually SKIP:non-GET) is the evidence for B2.
+     * NEVER contains query values, headers, cookies, tokens or bodies.
+     */
+    class ChartLogEntry internal constructor(
+        val time: String,
+        val method: String,
+        val urlForLog: String,
+        val status: Int,
+        val decision: String,
+        val keySeen: Boolean
+    ) {
+        override fun toString(): String {
+            val statusText = if (status == 0) "-" else status.toString()
+            return "$time $method $urlForLog $statusText $decision key:${if (keySeen) "SEEN" else "NEW"}"
+        }
+    }
+
+    private val chartLogLock = Any()
+    private val chartLog = ArrayDeque<ChartLogEntry>()
+
+    /** Exact-key/identity -> first-seen ms, for the report's SEEN/NEW column. */
+    private val seenKeys = LinkedHashMap<String, Long>()
+    private val seenKeysLock = Any()
+
+    /**
      * Records one luxalgo request in the ring buffer (last
      * [MAX_REQUEST_LOG_ENTRIES] kept). Non-luxalgo requests are filtered
      * here — the single choke point — so callers can log freely. Never logs
      * anything but the sanitized host+path+query-KEY-NAMES. Never throws.
+     * Chart-like requests are ALSO mirrored into the chart-cache report ring
+     * with a SEEN/NEW key marker (Phase 8 evidence tool).
      */
     fun recordRequest(
         method: String?,
@@ -185,14 +218,75 @@ class Tier2Cache(
                 requestLog.addLast(entry)
                 while (requestLog.size > MAX_REQUEST_LOG_ENTRIES) requestLog.removeFirst()
             }
+            maybeRecordChartEntry(url, entry)
         } catch (e: Exception) {
             // Logging must never break serving.
+        }
+    }
+
+    /**
+     * Phase 8 evidence tool: mirror chart-like requests into [chartLog] and
+     * update the seen-key set. Identity = exact cacheKey for GETs, sanitized
+     * URL for everything else (POST keys do not exist). Never throws.
+     */
+    private fun maybeRecordChartEntry(url: String?, entry: RequestLogEntry) {
+        try {
+            if (!Policy.chartLikeRequest(url)) return
+            val identity = if (entry.method == "GET") {
+                Policy.cacheKey("GET", url ?: "") ?: ("URL|" + entry.urlForLog)
+            } else {
+                "URL|" + entry.urlForLog
+            }
+            val seen: Boolean
+            synchronized(seenKeysLock) {
+                seen = seenKeys.containsKey(identity)
+                seenKeys[identity] = System.currentTimeMillis()
+                while (seenKeys.size > MAX_SEEN_KEYS) {
+                    seenKeys.remove(seenKeys.keys.first())
+                }
+            }
+            synchronized(chartLogLock) {
+                chartLog.addLast(
+                    ChartLogEntry(
+                        entry.time, entry.method, entry.urlForLog,
+                        entry.status, entry.decision, seen
+                    )
+                )
+                while (chartLog.size > MAX_CHART_LOG_ENTRIES) chartLog.removeFirst()
+            }
+        } catch (e: Exception) {
+            // never break serving
         }
     }
 
     /** Oldest-first snapshot of the request log (empty when nothing logged). */
     fun requestLogSnapshot(): List<RequestLogEntry> =
         synchronized(requestLogLock) { requestLog.toList() }
+
+    /**
+     * Phase 8: the chart-cache report — paste-ready, secret-free evidence
+     * for BUG B/B2. NEWEST first, capped at [maxEntries] lines. Header lines
+     * carry the app version; query KEY NAMES only, never values/cookies/
+     * tokens/bodies.
+     */
+    fun chartCacheReport(maxEntries: Int = MAX_CHART_LOG_ENTRIES): String =
+        synchronized(chartLogLock) {
+            val sb = StringBuilder()
+            sb.append("LuxChart chart-cache report\n")
+            sb.append("time: ")
+                .append(java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US)
+                    .format(java.util.Date()))
+                .append("\n")
+            sb.append("entries (newest first, max ").append(maxEntries)
+                .append("): time method host+path [queryKeyNames] status decision keySeen\n")
+            if (chartLog.isEmpty()) {
+                sb.append("(no chart-like luxalgo requests logged yet — open the chart, switch timeframes, then reopen this report)\n")
+            } else {
+                chartLog.asReversed().take(maxEntries)
+                    .forEach { sb.append(it).append('\n') }
+            }
+            sb.toString()
+        }
 
     /**
      * Entry point from WebViewClient.shouldInterceptRequest. ALWAYS returns a
@@ -1272,6 +1366,10 @@ class Tier2Cache(
         const val DEFAULT_MAX_BYTES = 4L * 1024 * 1024 * 1024
         /** Ring-buffer size of the in-app request log (Phase 7 item 10). */
         const val MAX_REQUEST_LOG_ENTRIES = 300
+        /** Ring size of the chart-cache report (Phase 8 evidence tool). */
+        const val MAX_CHART_LOG_ENTRIES = 120
+        /** Cap for the seen-key identity set backing the SEEN/NEW column. */
+        private const val MAX_SEEN_KEYS = 600
         /**
          * Per-response store limit (Phase 7 item 7): raised from 25 MB to
          * 100 MB per spec. Responses with a KNOWN length up to this size are

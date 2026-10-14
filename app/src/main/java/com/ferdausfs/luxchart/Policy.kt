@@ -432,6 +432,49 @@ object Policy {
         return sha256Hex("$method|R|".uppercase() + normalized)
     }
 
+    // ---- Chart-like request classification (Phase 8 evidence tool, pure) ------
+
+    /**
+     * PATH substrings that identify chart-data endpoints (candles, bars,
+     * history …). Substring match on the lower-cased path only — never the
+     * host, never the query.
+     */
+    val CHART_PATH_HINTS = listOf(
+        "candle", "chart", "history", "bars", "kline", "ohlcv",
+        "quote", "market-data", "marketdata", "tradingview", "series"
+    )
+
+    /**
+     * Query KEY NAMES (never values) that mark a request as chart data even
+     * when the path is generic (e.g. /api/v1/data?symbol=…&resolution=…).
+     */
+    val CHART_QUERY_KEY_HINTS = listOf(
+        "symbol", "resolution", "timeframe", "countback", "ticker", "interval"
+    )
+
+    /**
+     * TRUE => this request looks like chart data (candles/indicators/history).
+     * Used ONLY by the in-app chart-cache report (evidence tool for BUG B):
+     * POST bodies and WebSocket frames are invisible to the interceptor, so
+     * the report's method column is how we LEARN which channel the chart
+     * really uses. Unparseable => false.
+     */
+    fun chartLikeRequest(url: String?): Boolean {
+        if (url.isNullOrBlank()) return false
+        return try {
+            val uri = java.net.URI(url.trim())
+            val path = (uri.rawPath ?: "").lowercase()
+            if (CHART_PATH_HINTS.any { path.contains(it) }) return true
+            val keys = uri.rawQuery
+                ?.split('&')
+                ?.map { it.substringBefore('=').trim().lowercase() }
+                ?: emptyList()
+            keys.any { it in CHART_QUERY_KEY_HINTS }
+        } catch (e: Exception) {
+            false
+        }
+    }
+
     private fun sha256Hex(input: String): String {
         val digest = java.security.MessageDigest.getInstance("SHA-256")
         return digest.digest(input.toByteArray(Charsets.UTF_8))

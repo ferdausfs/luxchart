@@ -147,4 +147,30 @@ class Phase8PolicyTest {
         assertNull(Policy.relaxedNormalizeUrl("::bad::"))
         assertNull(Policy.relaxedCacheKey("GET", "::bad::"))
     }
+
+    // ---- Evidence tool: chart-like request classification -----------------------
+
+    @Test
+    fun `chart-like by path hints`() {
+        assertTrue(Policy.chartLikeRequest("https://api.luxalgo.com/v1/candles?from=1&to=2"))
+        assertTrue(Policy.chartLikeRequest("https://vela.luxalgo.com/chart"))
+        assertTrue(Policy.chartLikeRequest("https://api.luxalgo.com/v1/market-data/feed"))
+        assertTrue(Policy.chartLikeRequest("https://api.luxalgo.com/v1/Candles")) // case-insensitive
+    }
+
+    @Test
+    fun `chart-like by query key names even with a generic path`() {
+        assertTrue(Policy.chartLikeRequest("https://api.luxalgo.com/v1/data?symbol=BTC&resolution=5"))
+        assertTrue(Policy.chartLikeRequest("https://api.luxalgo.com/v1/data?timeframe=1h"))
+        assertTrue(Policy.chartLikeRequest("https://api.luxalgo.com/v1/data?countback=300"))
+    }
+
+    @Test
+    fun `non-chart requests are not classified as chart data`() {
+        assertFalse(Policy.chartLikeRequest("https://vela.luxalgo.com/assets/app.abc123.js"))
+        assertFalse(Policy.chartLikeRequest("https://vela.luxalgo.com/static/css/site.css"))
+        assertFalse(Policy.chartLikeRequest(null))
+        assertFalse(Policy.chartLikeRequest(""))
+        assertFalse(Policy.chartLikeRequest("::bad::"))
+    }
 }
