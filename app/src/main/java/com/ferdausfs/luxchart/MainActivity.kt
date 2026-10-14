@@ -27,6 +27,7 @@ import android.provider.Settings
 import android.util.Base64
 import android.view.HapticFeedbackConstants
 import android.view.Gravity
+import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
@@ -121,6 +122,10 @@ class MainActivity : ComponentActivity() {
 
     /** Last real (http/https) page URL — kept current in onPageStarted. */
     private var currentUrl: String = START_URL
+
+    /** Phase 7 item 10: Volume-Down press timestamps for the 3-within-2s
+     *  diagnostics gesture (works ONLINE and OFFLINE). */
+    private val volumeDownTimestamps = ArrayDeque<Long>()
 
     /** Tier-2 offline cache (stale-while-revalidate, app-private). */
     private var tier2Cache: Tier2Cache? = null
@@ -344,6 +349,34 @@ class MainActivity : ComponentActivity() {
         if (hasFocus) hideSystemBars()
     }
 
+    /**
+     * Phase 7 item 10: pressing Volume Down THREE times within 2 seconds
+     * opens the diagnostics + request-log dialog — reachable while ONLINE
+     * (the offline banner long-press keeps working too). The volume keys
+     * still do their normal job; the gesture only observes them.
+     */
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) {
+            val now = android.os.SystemClock.elapsedRealtime()
+            var triggered = false
+            synchronized(volumeDownTimestamps) {
+                volumeDownTimestamps.addLast(now)
+                while (volumeDownTimestamps.size > 3) volumeDownTimestamps.removeFirst()
+                if (volumeDownTimestamps.size == 3 &&
+                    now - volumeDownTimestamps.first() <= DIAG_GESTURE_WINDOW_MS
+                ) {
+                    volumeDownTimestamps.clear()
+                    triggered = true
+                }
+            }
+            if (triggered) {
+                rootLayout.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                showDiagnosticsDialog()
+            }
+        }
+        return super.onKeyDown(keyCode, event)
+    }
+
     override fun onDestroy() {
         if (::webView.isInitialized) {
             webView.destroy()
@@ -552,7 +585,17 @@ class MainActivity : ComponentActivity() {
                 // airplane mode can still open the app; with nothing saved,
                 // null lets the WebView fail naturally into the error page.
                 if (request.isForMainFrame) {
-                    if (isOnline || tier2KilledByCrashLoop) return null
+                    if (isOnline || tier2KilledByCrashLoop) {
+                        // Phase 7 item 10: online main frames are NEVER
+                        // intercepted (unchanged) but they ARE logged so the
+                        // request log shows what the site really loads.
+                        // recordRequest filters non-luxalgo hosts itself.
+                        tier2Cache?.recordRequest(
+                            request.method, request.url.toString(),
+                            0, null, -1, "NETWORK"
+                        )
+                        return null
+                    }
                     if (!request.method.equals("GET", ignoreCase = true)) return null
                     val served = tier2Cache?.serveMainFrameOffline(
                         request.url.toString(), START_URL
@@ -968,34 +1011,50 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** Long-press on the offline banner: copyable/shareable cache diagnostics. */
+    /** Long-press on the offline banner OR Volume-Down ×3 (2 s): diagnostics. */
     private fun showDiagnosticsDialog() {
         // Phase 6 item 5: full summary incl. the main-page-shell section.
-        val summary = tier2Cache?.diagnosticsSummary() ?: return
-        val body = TextView(this).apply {
-            text = summary
-            textSize = 12f
+        val cache = tier2Cache ?: return
+        val summary = cache.diagnosticsSummary()
+        // Phase 7 item 10: the request log — what the site really requests,
+        // sanitized (host+path, query KEY NAMES only; never values, headers,
+        // cookies, tokens or bodies).
+        val logLines = cache.requestLogSnapshot()
+        val logDump = if (logLines.isEmpty()) {
+            "(no luxalgo requests logged yet)"
+        } else {
+            logLines.joinToString("\n") { it.toString() }
+        }
+        val body = buildString {
+            append(summary)
+            append("\nrequest log (last ").append(Tier2Cache.MAX_REQUEST_LOG_ENTRIES)
+                .append(" luxalgo requests, oldest first)\n")
+            append(logDump)
+        }
+        val view = TextView(this).apply {
+            text = body
+            textSize = 11f
             typeface = Typeface.MONOSPACE
             setTextColor(0xFFCBD5E1.toInt())
             setPadding(dp(20), dp(14), dp(20), dp(4))
             setTextIsSelectable(true)
         }
-        val scroll = ScrollView(this).apply { addView(body) }
+        val scroll = ScrollView(this).apply { addView(view) }
         AlertDialog.Builder(this)
-            .setTitle("Offline cache diagnostics")
+            .setTitle("Cache diagnostics + request log")
             .setView(scroll)
             .setPositiveButton(R.string.diag_copy) { _, _ ->
                 val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                 cm.setPrimaryClip(
-                    ClipData.newPlainText("LuxChart offline diagnostics", summary)
+                    ClipData.newPlainText("LuxChart diagnostics + request log", body)
                 )
                 Toast.makeText(this, R.string.diag_copied, Toast.LENGTH_SHORT).show()
             }
             .setNegativeButton(R.string.diag_share) { _, _ ->
                 val send = Intent(Intent.ACTION_SEND).apply {
                     type = "text/plain"
-                    putExtra(Intent.EXTRA_TEXT, summary)
-                    putExtra(Intent.EXTRA_TITLE, "LuxChart offline diagnostics")
+                    putExtra(Intent.EXTRA_TEXT, body)
+                    putExtra(Intent.EXTRA_TITLE, "LuxChart diagnostics + request log")
                 }
                 runCatching {
                     startActivity(Intent.createChooser(send, getString(R.string.diag_share)))
@@ -1300,6 +1359,9 @@ class MainActivity : ComponentActivity() {
         private const val KEY_LAUNCH_CRASHES = "launch_crashes"
         /** Page-visible duration after which a launch counts as successful. */
         private const val CRASH_RESET_AFTER_VISIBLE_MS = 10_000L
+
+        /** Volume-Down ×3 gesture window (Phase 7 item 10). */
+        private const val DIAG_GESTURE_WINDOW_MS = 2_000L
 
         /** Cap for in-app blob/data saves — avoids OOM on absurd payloads. */
         private const val MAX_BLOB_BYTES = 80 * 1024 * 1024

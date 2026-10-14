@@ -154,12 +154,10 @@ object Policy {
     )
 
     /**
-     * Request-level cache-skip rules. TRUE means: never touch the cache for
-     * this request (just let the WebView do its default thing).
-     * Never: non-GET, Range (partial-content) request, WebSocket upgrade,
-     * non-http(s), and URLs with a sensitive PATH segment (Phase 7 item 4:
-     * auth, login, token, session, payment, … — path ONLY, never host,
-     * never query).
+     * Request-level cache-skip rules with an EXPLAINABLE reason (Phase 7
+     * item 10): returns null when the request may flow through the cache,
+     * otherwise a short stable reason string for the request log
+     * (SKIP:<reason> decision). Rules identical to [shouldSkipRequest].
      *
      * Phase 7 item 3: requests WITH an `Authorization` header are ALLOWED to
      * be cached (single-user personal app, app-private storage). The cache
@@ -167,28 +165,63 @@ object Policy {
      * it — and the header/token itself is never stored on disk, never
      * forwarded to disk meta, and never logged (see README trade-off note).
      */
-    fun shouldSkipRequest(
+    fun skipReason(
         method: String?,
         url: String?,
         requestHeaders: Map<String, String>
-    ): Boolean {
-        if (method.isNullOrBlank() || !method.equals("GET", ignoreCase = true)) return true
-        if (url.isNullOrBlank()) return true
+    ): String? {
+        if (method.isNullOrBlank() || !method.equals("GET", ignoreCase = true)) return "non-GET"
+        if (url.isNullOrBlank()) return "bad-url"
         val u = url.trim()
-        if (!u.lowercase().startsWith("https://") && !u.lowercase().startsWith("http://")) {
-            return true // incl. ws/wss
-        }
+        val lower = u.lowercase()
+        if (!lower.startsWith("https://") && !lower.startsWith("http://")) return "non-http"
         // Hotfix 1.6.1 item 3: partial-content requests must never be
         // intercepted (the WebView negotiates ranges itself).
-        if (requestHeaders.keys.any { it.equals("Range", ignoreCase = true) }) return true
+        if (requestHeaders.keys.any { it.equals("Range", ignoreCase = true) }) return "range"
         if (requestHeaders.entries.any {
                 it.key.equals("Upgrade", ignoreCase = true) &&
                     it.value.equals("websocket", ignoreCase = true)
             }
-        ) return true
-        // Phase 7 item 4: path-only segment match (never host, never query)
-        // replaces the old substring rule.
-        return urlHasSensitiveSegment(u)
+        ) return "websocket"
+        // Phase 7 item 4: path-only segment match (never host, never query).
+        if (urlHasSensitiveSegment(u)) return "sensitive-path"
+        return null
+    }
+
+    fun shouldSkipRequest(
+        method: String?,
+        url: String?,
+        requestHeaders: Map<String, String>
+    ): Boolean = skipReason(method, url, requestHeaders) != null
+
+    // ---- Request-log sanitizer (Phase 7 item 10, pure) ------------------------
+
+    /**
+     * Privacy-safe host+path for the in-app request log:
+     *   "vela.luxalgo.com/api/v1/candles [resolution,symbol]"
+     * Query KEY NAMES only (never values), original order, de-duplicated,
+     * fragment dropped, host never matches the sensitive-segment rule (host
+     * is never inspected there anyway). Unparseable => "(bad-url)".
+     * NEVER returns query values, headers, cookies, tokens or bodies.
+     */
+    fun sanitizedRequestUrl(url: String?): String {
+        if (url.isNullOrBlank()) return "(bad-url)"
+        return try {
+            val uri = java.net.URI(url.trim())
+            val host = uri.host?.lowercase() ?: return "(bad-url)"
+            val path = uri.rawPath ?: ""
+            val keys = uri.rawQuery
+                ?.split('&')
+                ?.mapNotNull { p ->
+                    p.substringBefore('=').trim().takeIf { it.isNotEmpty() }
+                }
+                ?.distinct()
+                ?: emptyList()
+            val keyPart = if (keys.isEmpty()) "" else " [${keys.joinToString(",")}]"
+            "$host$path$keyPart"
+        } catch (e: Exception) {
+            "(bad-url)"
+        }
     }
 
     // ---- Request-header forwarding (hotfix 1.6.1 item 3, pure, tested) -------

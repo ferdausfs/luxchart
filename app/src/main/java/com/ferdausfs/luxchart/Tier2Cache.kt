@@ -121,6 +121,79 @@ class Tier2Cache(
     val diagnostics = Diagnostics()
     private val lock = Any()
 
+    // ---- Request log (Phase 7 item 10) -----------------------------------------
+
+    /**
+     * One sanitized request-log line. Fields: time, method, host+path with
+     * query KEY NAMES only (Policy.sanitizedRequestUrl), status (0 = not
+     * seen by the cache), content-type, size (-1 = unknown), decision
+     * (HIT / STORED / REFRESHED / SKIP:<reason> / NETWORK).
+     * NEVER contains headers, cookies, tokens, query values or bodies.
+     */
+    class RequestLogEntry internal constructor(
+        val time: String,
+        val method: String,
+        val urlForLog: String,
+        val status: Int,
+        val contentType: String?,
+        val sizeBytes: Long,
+        val decision: String
+    ) {
+        override fun toString(): String {
+            val statusText = if (status == 0) "-" else status.toString()
+            val sizeText = when {
+                sizeBytes < 0 -> "-"
+                sizeBytes >= 1L shl 20 -> "%.1fMB".format(sizeBytes / 1048576.0)
+                sizeBytes >= 1L shl 10 -> "%.1fKB".format(sizeBytes / 1024.0)
+                else -> "${sizeBytes}B"
+            }
+            val type = contentType?.substringBefore(';')?.trim()?.ifEmpty { null } ?: "-"
+            return "$time $method $urlForLog $statusText $type $sizeText $decision"
+        }
+    }
+
+    private val requestLogLock = Any()
+    private val requestLog = ArrayDeque<RequestLogEntry>()
+
+    /**
+     * Records one luxalgo request in the ring buffer (last
+     * [MAX_REQUEST_LOG_ENTRIES] kept). Non-luxalgo requests are filtered
+     * here — the single choke point — so callers can log freely. Never logs
+     * anything but the sanitized host+path+query-KEY-NAMES. Never throws.
+     */
+    fun recordRequest(
+        method: String?,
+        url: String?,
+        status: Int,
+        contentType: String?,
+        sizeBytes: Long,
+        decision: String
+    ) {
+        try {
+            if (!Policy.isLuxAlgo(hostOf(url ?: ""))) return
+            val entry = RequestLogEntry(
+                time = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US)
+                    .format(java.util.Date()),
+                method = (method ?: "?").uppercase(),
+                urlForLog = Policy.sanitizedRequestUrl(url),
+                status = status,
+                contentType = contentType,
+                sizeBytes = sizeBytes,
+                decision = decision
+            )
+            synchronized(requestLogLock) {
+                requestLog.addLast(entry)
+                while (requestLog.size > MAX_REQUEST_LOG_ENTRIES) requestLog.removeFirst()
+            }
+        } catch (e: Exception) {
+            // Logging must never break serving.
+        }
+    }
+
+    /** Oldest-first snapshot of the request log (empty when nothing logged). */
+    fun requestLogSnapshot(): List<RequestLogEntry> =
+        synchronized(requestLogLock) { requestLog.toList() }
+
     /**
      * Entry point from WebViewClient.shouldInterceptRequest. ALWAYS returns a
      * usable response or null — never throws.
@@ -131,13 +204,18 @@ class Tier2Cache(
         requestHeaders: Map<String, String>?,
         userAgent: String?
     ): WebResourceResponse? {
-        if (diagnostics.disabled.get()) return null
+        if (diagnostics.disabled.get()) {
+            recordRequest(method, url, 0, null, -1, "SKIP:cache-disabled")
+            return null
+        }
         try {
             val host = try { URI(url ?: return null).host } catch (e: Exception) { return null }
             if (!Policy.isLuxAlgo(host)) return null // third-party: never touched, never logged
-            if (Policy.shouldSkipRequest(method, url, requestHeaders ?: emptyMap())) {
+            val skipReason = Policy.skipReason(method, url, requestHeaders ?: emptyMap())
+            if (skipReason != null) {
                 diagnostics.skipped.incrementAndGet()
                 diagnostics.recordSkipped("$host${pathOf(url!!)}")
+                recordRequest(method, url, 0, null, -1, "SKIP:$skipReason")
                 return null
             }
             return if (isOnline()) {
@@ -154,14 +232,25 @@ class Tier2Cache(
                     if (key != null && Policy.isApiLikeType(hit.contentType)) {
                         scheduleBackgroundRefresh(method, url, key, requestHeaders ?: emptyMap(), userAgent)
                     }
+                    recordRequest(method, url, hit.status, hit.contentType, hit.byteCount.toLong(), "HIT")
                     return hit.response
                 }
                 fetchAndStore(method, url, requestHeaders ?: emptyMap(), userAgent)
             } else {
-                readFromDisk(method!!, url)?.response
+                val hit = readFromDisk(method!!, url)
+                if (hit != null) {
+                    recordRequest(method, url, hit.status, hit.contentType, hit.byteCount.toLong(), "HIT")
+                    hit.response
+                } else {
+                    // Offline with nothing saved: the WebView fails naturally
+                    // into the error page — record WHY (Phase 7 item 10).
+                    recordRequest(method, url, 0, null, -1, "SKIP:no-saved-copy")
+                    null
+                }
             }
         } catch (e: Exception) {
             noteFailure()
+            recordRequest(method, url, 0, null, -1, "NETWORK")
             return null
         }
     }
@@ -223,6 +312,7 @@ class Tier2Cache(
                 // must run its own redirect + cookie handling for them.
                 diagnostics.skipped.incrementAndGet()
                 diagnostics.recordSkipped(hostOf(url) + pathOf(url))
+                recordRequest(method, url, status, null, -1, "NETWORK")
                 return null
             }
             val headers = conn.headerFields.filterKeys { it != null }
@@ -242,6 +332,7 @@ class Tier2Cache(
                 resetFailures()
                 val err = conn.errorStream
                 val data = if (err != null) err else ByteArrayInputStream(ByteArray(0))
+                recordRequest(method, url, status, contentType, -1, "NETWORK")
                 return buildStreamingResponse(conn, status, headers, data)
             }
 
@@ -250,6 +341,7 @@ class Tier2Cache(
             // to the WebView (it closes the connection when done).
             if (Policy.isStreamingType(contentType)) {
                 resetFailures()
+                recordRequest(method, url, status, contentType, -1, "NETWORK")
                 return buildStreamingResponse(conn, status, headers, conn.inputStream)
             }
 
@@ -263,15 +355,17 @@ class Tier2Cache(
                     // Server lied about Content-Length — refuse to serve a
                     // truncated body; null lets the WebView handle it itself.
                     diagnostics.skipped.incrementAndGet()
+                    recordRequest(method, url, status, contentType, -1, "NETWORK")
                     return null
                 }
-                return finishBuffered(key, url, status, headers, body, storable, background)
+                return finishBuffered(method, key, url, status, contentType, headers, body, storable, background)
             }
 
             if (contentLength > maxSingleResponseBytes.toLong()) {
                 // Known size too big for the cache — stream it through without
                 // buffering and without a second download. Not stored.
                 resetFailures()
+                recordRequest(method, url, status, contentType, -1, "NETWORK")
                 return buildStreamingResponse(conn, status, headers, conn.inputStream)
             }
 
@@ -282,17 +376,19 @@ class Tier2Cache(
             val probe = probeRead(conn.inputStream, PROBE_WINDOW_BYTES)
             return if (probe.rest == null) {
                 conn.disconnect()
-                finishBuffered(key, url, status, headers, probe.prefix, storable, background)
+                finishBuffered(method, key, url, status, contentType, headers, probe.prefix, storable, background)
             } else {
                 resetFailures()
                 val data = java.io.SequenceInputStream(
                     ByteArrayInputStream(probe.prefix), probe.rest
                 )
+                recordRequest(method, url, status, contentType, -1, "NETWORK")
                 buildStreamingResponse(conn, status, headers, data)
             }
         } catch (e: Exception) {
             noteFailure()
             runCatching { conn.disconnect() }
+            recordRequest(method, url, 0, null, -1, "NETWORK")
             return null
         }
     }
@@ -304,9 +400,11 @@ class Tier2Cache(
      * refreshUpdates instead.
      */
     private fun finishBuffered(
+        method: String,
         key: String,
         url: String,
         status: Int,
+        contentType: String?,
         headers: Map<String, List<String>>,
         body: ByteArray,
         storable: Boolean,
@@ -326,6 +424,12 @@ class Tier2Cache(
             diagnostics.stored.incrementAndGet()
             if (background) diagnostics.refreshUpdates.incrementAndGet()
         }
+        val decision = when {
+            written && background -> "REFRESHED"
+            written -> "STORED"
+            else -> "NETWORK"
+        }
+        recordRequest(method, url, status, contentType, body.size.toLong(), decision)
         resetFailures()
         return response
     }
@@ -579,7 +683,8 @@ class Tier2Cache(
     private class DiskHit(
         val response: WebResourceResponse,
         val contentType: String?,
-        val byteCount: Int
+        val byteCount: Int,
+        val status: Int
     )
 
     /**
@@ -620,7 +725,7 @@ class Tier2Cache(
                 )
                 val headers = meta.optJSONObject("headers")
                 headers?.keys()?.forEach { name -> response.responseHeaders[name] = headers.getString(name) }
-                DiskHit(response, contentType, bytes.size)
+                DiskHit(response, contentType, bytes.size, status)
             } catch (e: Exception) {
                 // Corrupt/unreadable meta => delete the pair, count a MISS —
                 // never an exception to the caller, never a failure count.
@@ -944,16 +1049,27 @@ class Tier2Cache(
      */
     fun serveMainFrameOffline(url: String, startUrl: String): WebResourceResponse? {
         return try {
-            if (!Policy.shellFetchEligible(url)) return null
-            serveShellInternal(url)
+            if (!Policy.shellFetchEligible(url)) {
+                recordRequest("GET", url, 0, null, -1, "SKIP:ineligible")
+                return null
+            }
+            val exact = serveShellInternal(url)
+            val served = exact
                 ?: if (Policy.spaShellFallback(url, startUrl)) serveShellInternal(startUrl)
                 else null
+            if (served != null) {
+                recordRequest("GET", url, 200, "text/html", served.second.toLong(), "HIT")
+            } else {
+                recordRequest("GET", url, 0, null, -1, "SKIP:no-saved-copy")
+            }
+            served?.first
         } catch (e: Exception) {
             null
         }
     }
 
-    private fun serveShellInternal(url: String): WebResourceResponse? {
+    /** Serves a stored shell and also returns its body size (for the log). */
+    private fun serveShellInternal(url: String): Pair<WebResourceResponse, Int>? {
         val shell = shellFor(url) ?: return null
         diagnostics.shellHits.incrementAndGet()
         val mime = shell.contentType?.substringBefore(';')?.trim()?.ifEmpty { null }
@@ -971,7 +1087,7 @@ class Tier2Cache(
         // Replay only the safe stored headers (CORS included). Shells never
         // carry cookie/token headers — they were filtered at store time.
         shell.headers.forEach { (name, value) -> response.responseHeaders[name] = value }
-        return response
+        return response to shell.body.size
     }
 
     /**
@@ -1067,6 +1183,8 @@ class Tier2Cache(
          * "Clear saved data" — the only deletion path.
          */
         const val DEFAULT_MAX_BYTES = 4L * 1024 * 1024 * 1024
+        /** Ring-buffer size of the in-app request log (Phase 7 item 10). */
+        const val MAX_REQUEST_LOG_ENTRIES = 300
         /**
          * Per-response store limit (Phase 7 item 7): raised from 25 MB to
          * 100 MB per spec. Responses with a KNOWN length up to this size are
