@@ -38,12 +38,19 @@ class Phase6PolicyTest {
     }
 
     @Test
-    fun `sensitive URLs are never eligible`() {
-        assertFalse(Policy.shellFetchEligible("$START?token=SECRET"))
+    fun `sensitive path segments are never eligible (Phase 7 item 4)`() {
         assertFalse(Policy.shellFetchEligible("https://vela.luxalgo.com/auth/login"))
         assertFalse(Policy.shellFetchEligible("https://vela.luxalgo.com/login?next=/chart"))
         assertFalse(Policy.shellFetchEligible("https://vela.luxalgo.com/session/new"))
         assertFalse(Policy.shellFetchEligible("https://vela.luxalgo.com/payment/upgrade"))
+    }
+
+    @Test
+    fun `query strings never disqualify a shell (Phase 7 item 4)`() {
+        // the old substring rule rejected ?token=... — the path-only segment
+        // rule never inspects the query, so these are eligible now.
+        assertTrue(Policy.shellFetchEligible("$START?token=SECRET"))
+        assertTrue(Policy.shellFetchEligible("$START?next=/login&session=1"))
     }
 
     // ---- shell key normalization -------------------------------------------------

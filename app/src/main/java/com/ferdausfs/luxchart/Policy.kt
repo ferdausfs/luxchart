@@ -80,10 +80,38 @@ object Policy {
 
     // ---- Tier-2 offline cache policy (pure, tested) --------------------------
 
-    /** URL substrings (lower-cased match on path+query) that must NEVER be cached. */
-    private val NEVER_CACHE_URL_TOKENS = listOf(
-        "auth", "login", "token", "session", "payment"
+    /**
+     * Phase 7 item 4 — sensitive PATH segments. This list REPLACES the old
+     * substring rule: matching is done on PATH SEGMENTS ONLY — never the
+     * host, never the query string. A segment matches when it equals one of
+     * these values (case-insensitive, after trimming). Segment equality
+     * (not substring): "/tokenizer" does NOT match "token", "/blog/authors"
+     * does NOT match "auth", "?next=/login" (query) does NOT match.
+     */
+    val SENSITIVE_PATH_SEGMENTS = listOf(
+        "auth", "oauth", "oauth2", "login", "logout", "signin", "signup",
+        "token", "tokens", "session", "sessions", "payment", "payments",
+        "checkout"
     )
+
+    private val SENSITIVE_SEGMENT_SET = SENSITIVE_PATH_SEGMENTS.toSet()
+
+    /**
+     * TRUE when any PATH segment of [url] equals a [SENSITIVE_PATH_SEGMENTS]
+     * entry (case-insensitive). The host and the query are NEVER inspected.
+     * Unparseable URL => TRUE (fail closed: cannot prove the path safe).
+     */
+    fun urlHasSensitiveSegment(url: String?): Boolean {
+        if (url.isNullOrBlank()) return true
+        return try {
+            val path = java.net.URI(url.trim()).rawPath ?: ""
+            path.split('/')
+                .map { it.trim().lowercase() }
+                .any { it.isNotEmpty() && it in SENSITIVE_SEGMENT_SET }
+        } catch (e: Exception) {
+            true
+        }
+    }
 
     /** Content types that are always streaming — never buffered/cached. */
     private val STREAMING_TYPES = listOf(
@@ -139,10 +167,9 @@ object Policy {
                     it.value.equals("websocket", ignoreCase = true)
             }
         ) return true
-        // Phase 7 item 3: Authorization no longer forces a skip (cached
-        // allowed); the sensitive-URL filter below is unchanged until item 4.
-        val pathAndQuery = u.lowercase().substringAfter("://")
-        return NEVER_CACHE_URL_TOKENS.any { pathAndQuery.contains(it) }
+        // Phase 7 item 4: path-only segment match (never host, never query)
+        // replaces the old substring rule.
+        return urlHasSensitiveSegment(u)
     }
 
     // ---- Request-header forwarding (hotfix 1.6.1 item 3, pure, tested) -------
@@ -337,8 +364,8 @@ object Policy {
     /**
      * TRUE => this URL may be shadow-fetched and stored as a shell:
      * https only, host on the navigation allow-list, and the URL must not
-     * look like an auth/login/token/session/payment address (same sensitive
-     * token list the Tier-2 cache uses).
+     * have a sensitive PATH segment (Phase 7 item 4: path-only match —
+     * query strings are never inspected).
      */
     fun shellFetchEligible(url: String?): Boolean {
         if (url.isNullOrBlank()) return false
@@ -350,8 +377,7 @@ object Policy {
             return false
         } ?: return false
         if (!isAllowed(host)) return false
-        val pathAndQuery = trimmed.lowercase().substringAfter("://")
-        return NEVER_CACHE_URL_TOKENS.none { pathAndQuery.contains(it) }
+        return !urlHasSensitiveSegment(trimmed)
     }
 
     /**

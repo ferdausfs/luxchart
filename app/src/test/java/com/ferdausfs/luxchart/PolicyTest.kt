@@ -170,14 +170,45 @@ class PolicyTest {
     }
 
     @Test
-    fun `sensitive url tokens force a skip`() {
+    fun `sensitive path segments force a skip (Phase 7 item 4)`() {
         listOf(
             "https://vela.luxalgo.com/api/auth/me",
             "https://vela.luxalgo.com/login",
-            "https://vela.luxalgo.com/api?token=abc",
+            "https://vela.luxalgo.com/Login",           // case-insensitive
+            "https://vela.luxalgo.com/login/",
+            "https://vela.luxalgo.com/logout",
+            "https://vela.luxalgo.com/signin",
+            "https://vela.luxalgo.com/signup",
+            "https://vela.luxalgo.com/oauth2/token",
+            "https://vela.luxalgo.com/tokens/list",
             "https://vela.luxalgo.com/session/refresh",
-            "https://vela.luxalgo.com/checkout/payment"
+            "https://vela.luxalgo.com/sessions/current",
+            "https://vela.luxalgo.com/payment/upgrade",
+            "https://vela.luxalgo.com/payments",
+            "https://vela.luxalgo.com/checkout",
+            "https://vela.luxalgo.com/auth"
         ).forEach { assertTrue(it, Policy.shouldSkipRequest("GET", it, noHeaders)) }
+    }
+
+    @Test
+    fun `path-only matching ignores host and query (Phase 7 item 4)`() {
+        // query strings are NEVER inspected
+        listOf(
+            "https://vela.luxalgo.com/api?token=abc",
+            "https://vela.luxalgo.com/chart?next=/login",
+            "https://vela.luxalgo.com/api?session=1&auth=1"
+        ).forEach { assertFalse(it, Policy.shouldSkipRequest("GET", it, noHeaders)) }
+        // hosts are NEVER inspected (only luxalgo hosts reach the cache anyway)
+        assertFalse(
+            Policy.shouldSkipRequest("GET", "https://vela.luxalgo.com/data", noHeaders)
+        )
+        // segment EQUALITY, not substring: lookalike segments are fine
+        listOf(
+            "https://vela.luxalgo.com/tokenizer/assets",
+            "https://vela.luxalgo.com/blog/authors",
+            "https://vela.luxalgo.com/sessionships/list",
+            "https://vela.luxalgo.com/checkout-page"
+        ).forEach { assertFalse(it, Policy.shouldSkipRequest("GET", it, noHeaders)) }
     }
 
     @Test
