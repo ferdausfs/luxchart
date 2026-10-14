@@ -396,6 +396,216 @@ class Tier2Cache(
         }
     }
 
+    // ---- Main-page shell (Phase 6) ---------------------------------------------
+    //
+    // Shells live in the SAME directory / LRU / lock as Tier-2 entries but use
+    // the "SHELL|" key namespace (Policy.shellKey), so they are disjoint from
+    // sub-resource entries. clear() wipes both; LRU eviction covers both.
+
+    /** A stored main-page shell: safe metadata + the HTML body. */
+    class StoredShell(
+        val url: String,
+        val host: String,
+        val path: String,
+        val savedAtMs: Long,
+        val status: Int,
+        val contentType: String?,
+        val headers: Map<String, String>,
+        val body: ByteArray
+    )
+
+    private val shellExecutor = Executors.newSingleThreadExecutor()
+
+    /** key(normalized URL) -> last shadow-fetch attempt (ms). */
+    private val shellThrottle = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    /** Last shadow-fetch outcome for diagnostics: stored / skipped:reason / failed:code. */
+    @Volatile
+    var lastShellResult: String = "(no shadow fetch yet)"
+        private set
+
+    /**
+     * Schedules ONE background shadow fetch of [url] (the page that just
+     * finished loading ONLINE). Called from the main thread (onPageFinished);
+     * all work happens on [shellExecutor]. Never throws.
+     */
+    fun maybeShadowFetch(url: String, userAgent: String?) {
+        try {
+            shellExecutor.execute { shadowFetch(url, userAgent) }
+        } catch (e: Exception) {
+            // Executor rejected/shutdown — never break the page.
+        }
+    }
+
+    private fun shadowFetch(url: String, userAgent: String?) {
+        if (diagnostics.disabled.get()) {
+            lastShellResult = "skipped:cache-disabled"
+            return
+        }
+        if (!isOnline()) {
+            lastShellResult = "skipped:offline"
+            return
+        }
+        if (!Policy.shellFetchEligible(url)) {
+            lastShellResult = "skipped:ineligible-url"
+            return
+        }
+        val key = Policy.shellKey(url) ?: run {
+            lastShellResult = "skipped:bad-url"
+            return
+        }
+        val now = System.currentTimeMillis()
+        if (!Policy.shellThrottleAllowed(
+                shellThrottle[key] ?: 0L, now, Policy.SHELL_THROTTLE_MS
+            )
+        ) {
+            lastShellResult = "skipped:throttled"
+            return
+        }
+        shellThrottle[key] = now // claim the slot BEFORE the network call
+
+        val conn = try {
+            (URL(url).openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = SHELL_CONNECT_TIMEOUT_MS
+                readTimeout = SHELL_READ_TIMEOUT_MS
+                // Redirects are the WebView's business; a 3xx is skipped.
+                instanceFollowRedirects = false
+                setRequestProperty("Accept-Encoding", "identity") // predictable body
+                setRequestProperty("Accept", "text/html")
+                userAgent?.takeIf { it.isNotBlank() }
+                    ?.let { setRequestProperty("User-Agent", it) }
+                cookieHeader(url)?.takeIf { it.isNotBlank() }
+                    ?.let { setRequestProperty("Cookie", it) }
+            }
+        } catch (e: Exception) {
+            lastShellResult = "failed:connect"
+            return
+        }
+
+        try {
+            val status = conn.responseCode
+            val headers = conn.headerFields.filterKeys { it != null }
+                .mapKeys { it.key as String }
+            if (status in 300..399) {
+                // No redirect following => the requested URL is always the
+                // "final URL"; a 3xx is simply not storable.
+                lastShellResult = "skipped:redirect-$status"
+                return
+            }
+            if (status != 200) {
+                lastShellResult = "failed:http-$status"
+                return
+            }
+            val contentType = headers.entries
+                .firstOrNull { it.key.equals("Content-Type", true) }
+                ?.value?.firstOrNull()
+            if (contentType == null ||
+                !contentType.trim().lowercase().startsWith("text/html")
+            ) {
+                lastShellResult = "skipped:content-type"
+                return
+            }
+            val body = readCapped(conn.inputStream, Policy.SHELL_MAX_BYTES)
+            if (body.size > Policy.SHELL_MAX_BYTES) {
+                lastShellResult = "skipped:too-large"
+                return
+            }
+            if (Policy.looksLikeChallengeOrLogin(String(body, Charsets.UTF_8))) {
+                lastShellResult = "skipped:challenge"
+                return
+            }
+            // NOTE: Set-Cookie from this shadow request is deliberately
+            // IGNORED — it must never touch the WebView cookie store.
+            storeShell(url, status, contentType, headers, body)
+            lastShellResult = "stored"
+        } catch (e: Exception) {
+            lastShellResult = "failed:io"
+        } finally {
+            runCatching { conn.disconnect() }
+        }
+    }
+
+    /** Reads at most [maxBytes] + 1 bytes (oversize detection), minSdk-safe. */
+    private fun readCapped(stream: java.io.InputStream, maxBytes: Int): ByteArray {
+        val out = java.io.ByteArrayOutputStream(maxBytes.coerceAtMost(1 shl 20))
+        val chunk = ByteArray(64 * 1024)
+        stream.use { input ->
+            while (true) {
+                val n = input.read(chunk)
+                if (n == -1) break
+                if (out.size() + n > maxBytes + 1) {
+                    out.write(chunk, 0, maxBytes + 1 - out.size())
+                    break
+                }
+                out.write(chunk, 0, n)
+            }
+        }
+        return out.toByteArray()
+    }
+
+    /** Persists a shell entry (safe headers only) under the "SHELL|" namespace. */
+    private fun storeShell(
+        url: String,
+        status: Int,
+        contentType: String?,
+        headers: Map<String, List<String>>,
+        body: ByteArray
+    ) {
+        val key = Policy.shellKey(url) ?: return
+        synchronized(lock) {
+            if (!dir.exists()) dir.mkdirs()
+            val meta = JSONObject()
+            meta.put("type", "shell")
+            meta.put("url", url)
+            meta.put("status", status)
+            meta.put("saved-at", System.currentTimeMillis())
+            meta.put("size", body.size)
+            if (contentType != null) meta.put("content-type", contentType)
+            val safe = JSONObject()
+            headers.forEach { (name, values) ->
+                if (SAFE_RESPONSE_HEADERS.any { it.equals(name, true) } && values.isNotEmpty()) {
+                    safe.put(name, values.joinToString(", "))
+                }
+            }
+            meta.put("headers", safe)
+            File(dir, "$key.bin").writeBytes(body)
+            File(dir, "$key.meta").writeText(meta.toString())
+            evictIfNeededAsync()
+        }
+    }
+
+    /** Loads a stored shell for [url], or null. Touches LRU recency on hit. */
+    fun shellFor(url: String): StoredShell? {
+        val key = Policy.shellKey(url) ?: return null
+        synchronized(lock) {
+            val bodyFile = File(dir, "$key.bin")
+            val metaFile = File(dir, "$key.meta")
+            if (!bodyFile.exists() || !metaFile.exists()) return null
+            return try {
+                val meta = JSONObject(metaFile.readText())
+                val bytes = bodyFile.readBytes()
+                bodyFile.setLastModified(System.currentTimeMillis()) // LRU touch
+                val shellUrl = meta.optString("url", url)
+                val headersJson = meta.optJSONObject("headers")
+                val headers = LinkedHashMap<String, String>()
+                headersJson?.keys()?.forEach { n -> headers[n] = headersJson.getString(n) }
+                StoredShell(
+                    url = shellUrl,
+                    host = hostOf(shellUrl),
+                    path = pathOf(shellUrl),
+                    savedAtMs = meta.optLong("saved-at", 0L),
+                    status = meta.optInt("status", 200),
+                    contentType = meta.optString("content-type", "").ifEmpty { null },
+                    headers = headers,
+                    body = bytes
+                )
+            } catch (e: Exception) {
+                null
+            }
+        }
+    }
+
     // ---- Failure circuit breaker ----------------------------------------------
 
     private fun noteFailure() {
@@ -425,6 +635,10 @@ class Tier2Cache(
         const val MAX_CONSECUTIVE_FAILURES = 3
         private const val CONNECT_TIMEOUT_MS = 8_000
         private const val READ_TIMEOUT_MS = 15_000
+
+        /** Shadow-fetch timeouts (spec: 10 s). */
+        private const val SHELL_CONNECT_TIMEOUT_MS = 10_000
+        private const val SHELL_READ_TIMEOUT_MS = 10_000
 
         /** Headers worth persisting and replaying (CORS included, nothing sensitive). */
         private val SAFE_RESPONSE_HEADERS = listOf(

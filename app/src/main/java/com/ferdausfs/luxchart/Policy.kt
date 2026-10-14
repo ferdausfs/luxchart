@@ -249,6 +249,80 @@ object Policy {
         }
     }
 
+    // ---- Main-page shell (Phase 6 item 1, pure, tested) -----------------------
+    //
+    // The "shell" is a saved copy of a main-page HTML document (the app-shell
+    // of vela.luxalgo.com/chart). It is fetched in the background while the
+    // app is ONLINE (shadow fetch) and served by shouldInterceptRequest only
+    // when the device is OFFLINE. Online navigation is never touched.
+
+    /** Max stored shell body size — the document itself, not its assets. */
+    const val SHELL_MAX_BYTES = 2 * 1024 * 1024
+
+    /** One shadow fetch per URL per 10 minutes (spec throttle). */
+    const val SHELL_THROTTLE_MS = 10L * 60 * 1000
+
+    /**
+     * Substrings (lower-cased) that identify a bot-protection / challenge
+     * page body. A response whose body contains any of these is NEVER stored
+     * as a shell — offline would otherwise show the challenge forever.
+     * Login pages are covered separately by the sensitive-URL token filter
+     * (auth/login/token/session/payment) applied in [shellFetchEligible].
+     */
+    val SHELL_CHALLENGE_MARKERS = listOf(
+        "just a moment",
+        "cf-chl",
+        "challenge-platform",
+        "cf-browser-verification",
+        "checking your browser"
+    )
+
+    /** TRUE => the body looks like a Cloudflare challenge / bot wall, not the real app shell. */
+    fun looksLikeChallengeOrLogin(htmlBody: String?): Boolean {
+        if (htmlBody.isNullOrEmpty()) return false
+        val lower = htmlBody.lowercase()
+        return SHELL_CHALLENGE_MARKERS.any { lower.contains(it) }
+    }
+
+    /**
+     * TRUE => this URL may be shadow-fetched and stored as a shell:
+     * https only, host on the navigation allow-list, and the URL must not
+     * look like an auth/login/token/session/payment address (same sensitive
+     * token list the Tier-2 cache uses).
+     */
+    fun shellFetchEligible(url: String?): Boolean {
+        if (url.isNullOrBlank()) return false
+        val trimmed = url.trim()
+        if (!trimmed.lowercase().startsWith("https://")) return false
+        val host = try {
+            java.net.URI(trimmed).host
+        } catch (e: Exception) {
+            return false
+        } ?: return false
+        if (!isAllowed(host)) return false
+        val pathAndQuery = trimmed.lowercase().substringAfter("://")
+        return NEVER_CACHE_URL_TOKENS.none { pathAndQuery.contains(it) }
+    }
+
+    /**
+     * Shell cache key: "SHELL|" namespace + [normalizeUrl]. The normalized
+     * URL has no fragment (and a sorted query), so /chart#pane and /chart
+     * share one shell entry while staying fully disjoint from the Tier-2
+     * "GET|" keys in the same directory.
+     */
+    fun shellKey(url: String?): String? {
+        val normalized = normalizeUrl(url) ?: return null
+        return sha256Hex("SHELL|" + normalized)
+    }
+
+    /**
+     * Throttle rule for shadow fetches: allowed only when at least
+     * [minIntervalMs] has passed since the last attempt for the same key
+     * (or there was no previous attempt).
+     */
+    fun shellThrottleAllowed(lastAttemptMs: Long, nowMs: Long, minIntervalMs: Long): Boolean =
+        lastAttemptMs <= 0L || nowMs - lastAttemptMs >= minIntervalMs
+
     // ---- Crash-loop kill switch (hotfix 1.6.1 item 5, pure, tested) ----------
 
     /**

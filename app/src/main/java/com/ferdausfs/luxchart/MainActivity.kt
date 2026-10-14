@@ -594,6 +594,14 @@ class MainActivity : ComponentActivity() {
                 contentReady = true
                 revealContent()
             }
+            // Phase 6 item 1: shadow-fetch the main-page shell while ONLINE.
+            // Main thread here, so reading requestUserAgent is safe; all work
+            // runs on the cache's background executor (throttled, and only
+            // eligible https allow-listed documents are stored). Never runs
+            // for the error page (file:).
+            if (isOnline && url != null && url.startsWith("https")) {
+                runCatching { tier2Cache?.maybeShadowFetch(url, requestUserAgent) }
+            }
         }
     }
 
