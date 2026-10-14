@@ -366,9 +366,13 @@ class Tier2Cache(
                 val hit = readFromDisk(method, url)
                 if (hit != null) {
                     diagnostics.cacheFirstHits.incrementAndGet()
+                    // NB: the null-smart-cast of `key` from the if-condition
+                    // does NOT reach the else-if branch, so the guard is
+                    // repeated there (Kotlin compile error 1.9.0 run #48).
                     if (key != null && Policy.isApiLikeType(hit.contentType)) {
                         scheduleBackgroundRefresh(method, url, key, requestHeaders ?: emptyMap(), userAgent)
                     } else if (
+                        key != null &&
                         Policy.staticNeedsRevalidate(
                             hit.contentType, hit.savedAtMs,
                             System.currentTimeMillis(), Policy.STATIC_REVALIDATE_TTL_MS
