@@ -55,9 +55,12 @@ class Phase6PolicyTest {
             Policy.shellKey("$START#pane")
         )
         assertEquals(
-            Policy.shellKey("$START#deeply/nested#twice"),
+            Policy.shellKey("$START#pane/sub-view"),
             Policy.shellKey(START)
         )
+        // java.net.URI is RFC-strict: a second '#' inside the fragment is
+        // unparseable => no key => the shell is simply never stored.
+        assertNull(Policy.shellKey("$START#deeply/nested#twice"))
     }
 
     @Test

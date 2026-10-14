@@ -272,6 +272,7 @@ object Policy {
     val SHELL_CHALLENGE_MARKERS = listOf(
         "just a moment",
         "cf-chl",
+        "_cf_chl", // Cloudflare's JS-side opts (window._cf_chl_opt, …)
         "challenge-platform",
         "cf-browser-verification",
         "checking your browser"
