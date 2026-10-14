@@ -10,6 +10,36 @@ secret values in this file. Secret *names* and file *names* are allowed.
 
 ---
 
+## Phase 1 — 2026-10-14 — Stability hardening (versionName 1.2.0)
+
+- **Agent/Tool:** GLM (Super Z CLI) acting as senior Android engineer
+- **Feature:** Phase 1 — stability (4 items, owner mandate)
+- **What changed:**
+  1. `onReceivedHttpError` no longer replaced by the offline screen: HTTP >=
+     400 (Cloudflare challenge, 403, 429) renders normally; the offline page
+     is shown only for real main-frame network errors in `onReceivedError`.
+  2. `onRenderProcessGone` returns true, destroys the dead WebView and
+     rebuilds an identical one (same settings/clients/bridges/cookies via the
+     new `createAndAttachWebView`/`setupWebView` factory) and reloads
+     `currentUrl` (tracked in `onPageStarted`, http(s) only). Guard: max 3
+     rebuilds, then the error page — the app never crashes.
+  3. `onSaveInstanceState` no longer calls `webView.saveState`
+     (TransactionTooLarge risk) — saves `currentUrl` + error flag only;
+     restore re-loads the URL.
+  4. Manifest: `allowBackup="false"`, `fullBackupContent="false"` (session
+     cookies never leave the device via OS backup). versionName 1.2.0.
+- **Touched files:** `MainActivity.kt`, `AndroidManifest.xml`,
+  `app/build.gradle.kts`
+- **Commit hashes:** `34b7ce8` (item 1), `de215d6` (item 2),
+  `3592b78` (item 3), `7bbc311` (item 4)
+- **Build:** CI run #10 — GREEN, artifact
+  `LuxChart-release-apk-10`: https://github.com/ferdausfs/luxchart/actions/runs/38515118447
+- **Pending items:** none for this phase
+- **Notes for next agent:** WebView now always exists before
+  `applyEdgeToEdgeAndInsets()`; recreation path re-registers JS interfaces —
+  any NEW bridge must be added inside `setupWebView()` (recreation keeps it).
+---
+
 ## Phase 0 — 2026-10-14 — Start URL → vela.luxalgo.com/chart (versionName 1.1.1)
 
 - **Agent/Tool:** GLM (Super Z CLI) acting as senior Android engineer
