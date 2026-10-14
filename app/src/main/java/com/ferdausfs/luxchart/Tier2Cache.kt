@@ -171,7 +171,10 @@ class Tier2Cache(
                 // this fetch must answer with the 3xx itself (caller returns
                 // null for it) instead of silently following it.
                 instanceFollowRedirects = false
-                setRequestProperty("Accept-Encoding", "identity") // predictable body
+                // Phase 7 item 7: NO "Accept-Encoding: identity" anymore.
+                // HttpURLConnection then transparently adds gzip and gunzips
+                // the body for us — the bytes read here are exactly what the
+                // WebView expects (Content-Encoding never reaches a response).
                 userAgent?.let { setRequestProperty("User-Agent", it) }
                 cookieHeader(url)?.takeIf { it.isNotBlank() }
                     ?.let { setRequestProperty("Cookie", it) }
@@ -199,13 +202,8 @@ class Tier2Cache(
             return null
         }
 
-        val body: ByteArray
-        val status: Int
-        val headers: Map<String, List<String>>
         try {
-            status = conn.responseCode
-            headers = conn.headerFields.filterKeys { it != null }
-                .mapKeys { it.key as String }
+            val status = conn.responseCode
             if (status in 300..399) {
                 // Hotfix 1.6.1 item 3: never intercept redirects — the WebView
                 // must run its own redirect + cookie handling for them.
@@ -213,64 +211,91 @@ class Tier2Cache(
                 diagnostics.recordSkipped(hostOf(url) + pathOf(url))
                 return null
             }
-            val contentLength = conn.contentLengthLong
-            if (contentLength > maxSingleResponseBytes) {
-                // Too big to buffer — let the WebView stream it itself.
-                diagnostics.skipped.incrementAndGet()
-                diagnostics.recordSkipped(hostOf(url) + pathOf(url))
-                return null
+            val headers = conn.headerFields.filterKeys { it != null }
+                .mapKeys { it.key as String }
+            val contentType = headers.entries
+                .firstOrNull { it.key.equals("Content-Type", true) }?.value?.firstOrNull()
+            val contentLength = conn.contentLengthLong // -1 when gzip/chunked
+
+            // Hotfix 1.6.1 item 3 (kept): every intercepted response hands its
+            // Set-Cookie to the WebView cookie store before returning.
+            applySetCookies(url, headers)
+
+            // Phase 7 item 7 — 4xx/5xx return the REAL response (status, body,
+            // reason phrase) instead of null, so the WebView does not re-request
+            // (no double download). Never stored. Streamed, not buffered.
+            if (status >= 400) {
+                resetFailures()
+                val err = conn.errorStream
+                val data = if (err != null) err else ByteArrayInputStream(ByteArray(0))
+                return buildStreamingResponse(conn, status, headers, data)
             }
-            val stream = if (status in 200..299) conn.inputStream else conn.errorStream
-            // readNBytes is API 33+; manual chunked read keeps minSdk 24.
-            body = if (stream != null) {
-                val out = java.io.ByteArrayOutputStream(maxSingleResponseBytes.coerceAtMost(1 shl 20))
-                val chunk = ByteArray(64 * 1024)
-                val limit = maxSingleResponseBytes + 1
-                stream.use { input ->
-                    while (true) {
-                        val n = input.read(chunk)
-                        if (n == -1) break
-                        if (out.size() + n > limit) {
-                            out.write(chunk, 0, limit - out.size())
-                            break
-                        }
-                        out.write(chunk, 0, n)
-                    }
+
+            // Phase 7 item 7 — always-streaming types (text/event-stream, gRPC)
+            // are NEVER buffered and NEVER stored: the live stream goes straight
+            // to the WebView (it closes the connection when done).
+            if (Policy.isStreamingType(contentType)) {
+                resetFailures()
+                return buildStreamingResponse(conn, status, headers, conn.inputStream)
+            }
+
+            val storable = Policy.shouldStoreResponse(status, headers)
+
+            if (contentLength in 0..maxSingleResponseBytes.toLong()) {
+                // Known size that fits the store limit — buffer, serve, store.
+                val body = readCapped(conn.inputStream, maxSingleResponseBytes)
+                conn.disconnect()
+                if (body.size > maxSingleResponseBytes) {
+                    // Server lied about Content-Length — refuse to serve a
+                    // truncated body; null lets the WebView handle it itself.
+                    diagnostics.skipped.incrementAndGet()
+                    return null
                 }
-                out.toByteArray()
-            } else {
-                ByteArray(0)
+                return finishBuffered(key, url, status, headers, body, storable)
             }
-            if (body.size > maxSingleResponseBytes) {
-                diagnostics.skipped.incrementAndGet()
-                diagnostics.recordSkipped(hostOf(url) + pathOf(url))
-                return null
+
+            if (contentLength > maxSingleResponseBytes.toLong()) {
+                // Known size too big for the cache — stream it through without
+                // buffering and without a second download. Not stored.
+                resetFailures()
+                return buildStreamingResponse(conn, status, headers, conn.inputStream)
+            }
+
+            // Unknown length (typical for gzip/chunked): probe-read a bounded
+            // window. Body ends inside the window => buffered path (serve +
+            // store). Window exceeded => stream prefix + rest via
+            // SequenceInputStream (already-read bytes are NOT re-downloaded).
+            val probe = probeRead(conn.inputStream, PROBE_WINDOW_BYTES)
+            return if (probe.rest == null) {
+                conn.disconnect()
+                finishBuffered(key, url, status, headers, probe.prefix, storable)
+            } else {
+                resetFailures()
+                val data = java.io.SequenceInputStream(
+                    ByteArrayInputStream(probe.prefix), probe.rest
+                )
+                buildStreamingResponse(conn, status, headers, data)
             }
         } catch (e: Exception) {
             noteFailure()
-            return null
-        } finally {
-            conn.disconnect()
-        }
-
-        if (status !in 200..299) {
-            // Not storable; hand the WebView a null so it renders the page's
-            // own error handling (Cloudflare etc. must still work).
+            runCatching { conn.disconnect() }
             return null
         }
+    }
 
-        // Hotfix 1.6.1 item 3: hand every Set-Cookie of an intercepted
-        // response to the WebView's cookie store BEFORE returning, so the
-        // page's session state stays coherent. (The response we replay to
-        // the WebView never carries cookie headers, and disk storage still
-        // refuses Set-Cookie responses — see Policy.shouldStoreResponse.)
-        applySetCookies(url, headers)
-
+    /** Buffered 2xx: serve the bytes and (when storable) overwrite the disk entry. */
+    private fun finishBuffered(
+        key: String,
+        url: String,
+        status: Int,
+        headers: Map<String, List<String>>,
+        body: ByteArray,
+        storable: Boolean
+    ): WebResourceResponse {
         val response = buildResponse(status, headers, body)
         diagnostics.stored.incrementAndGet()
         resetFailures()
-
-        if (Policy.shouldStoreResponse(status, headers)) {
+        if (storable) {
             try {
                 storeToDisk(key, url, status, headers, body)
             } catch (e: Exception) {
@@ -278,6 +303,95 @@ class Tier2Cache(
             }
         }
         return response
+    }
+
+    /** Prefix bytes + the remaining stream; rest == null when the body ended inside the window. */
+    private class ProbeResult(val prefix: ByteArray, val rest: java.io.InputStream?)
+
+    /**
+     * Reads up to [window] bytes; if the body continues past the window, the
+     * un-consumed tail of the last chunk is kept and the rest of the stream
+     * is returned so NO byte is lost (prefix + leftover + stream).
+     */
+    private fun probeRead(stream: java.io.InputStream, window: Int): ProbeResult {
+        val out = java.io.ByteArrayOutputStream(window.coerceAtMost(1 shl 20))
+        val chunk = ByteArray(64 * 1024)
+        var leftover: ByteArray? = null
+        while (true) {
+            // IOExceptions propagate to fetchAndStore's catch (a mid-body
+            // failure must NOT be served as a complete body).
+            val n = stream.read(chunk)
+            if (n == -1) break
+            val space = window - out.size()
+            if (n <= space) {
+                out.write(chunk, 0, n)
+                if (out.size() == window) continue
+            } else {
+                out.write(chunk, 0, space)
+                leftover = chunk.copyOfRange(space, n)
+                break
+            }
+        }
+        val prefix = out.toByteArray()
+        val rest = leftover?.let {
+            java.io.SequenceInputStream(ByteArrayInputStream(it), stream)
+        }
+        return ProbeResult(prefix, rest)
+    }
+
+    /**
+     * Builds a streaming WebResourceResponse: real status + reason phrase,
+     * safe replayed headers, and an InputStream whose close() disconnects the
+     * underlying connection (the WebView calls close when done reading).
+     */
+    private fun buildStreamingResponse(
+        conn: HttpURLConnection,
+        status: Int,
+        headers: Map<String, List<String>>,
+        data: java.io.InputStream
+    ): WebResourceResponse {
+        val reason = conn.responseMessage?.takeIf { it.isNotBlank() } ?: reasonFor(status)
+        val stream = object : java.io.InputStream() {
+            override fun read(): Int = data.read()
+            override fun read(b: ByteArray, off: Int, len: Int): Int = data.read(b, off, len)
+            override fun available(): Int = try { data.available() } catch (e: Exception) { 0 }
+            override fun close() {
+                runCatching { data.close() }
+                runCatching { conn.disconnect() }
+            }
+        }
+        val response = WebResourceResponse(
+            mimeOf(headers), charsetOf(headers), status, reason, mapOf(), stream
+        )
+        headers.forEach { (name, values) ->
+            if (SAFE_RESPONSE_HEADERS.any { it.equals(name, true) }) {
+                values.forEach { v -> response.responseHeaders[name] = v }
+            }
+        }
+        return response
+    }
+
+    private fun mimeOf(headers: Map<String, List<String>>): String? =
+        headers.entries.firstOrNull { it.key.equals("Content-Type", true) }
+            ?.value?.firstOrNull()?.substringBefore(';')?.trim()?.ifEmpty { null }
+
+    private fun charsetOf(headers: Map<String, List<String>>): String? =
+        headers.entries.firstOrNull { it.key.equals("Content-Type", true) }
+            ?.value?.firstOrNull()
+            ?.split(';')
+            ?.map { it.trim() }
+            ?.firstOrNull { it.startsWith("charset=", true) }
+            ?.substringAfter('=')?.trim(' ', '"')
+
+    /** Non-empty reason phrase fallback for statuses without a message. */
+    private fun reasonFor(status: Int): String = when (status) {
+        400 -> "Bad Request"
+        401 -> "Unauthorized"
+        403 -> "Forbidden"
+        404 -> "Not Found"
+        429 -> "Too Many Requests"
+        in 500..599 -> "Server Error"
+        else -> "OK"
     }
 
     private fun buildResponse(
@@ -569,7 +683,7 @@ class Tier2Cache(
                 readTimeout = SHELL_READ_TIMEOUT_MS
                 // Redirects are the WebView's business; a 3xx is skipped.
                 instanceFollowRedirects = false
-                setRequestProperty("Accept-Encoding", "identity") // predictable body
+                // Phase 7 item 7: no Accept-Encoding override — transparent gzip.
                 setRequestProperty("Accept", "text/html")
                 userAgent?.takeIf { it.isNotBlank() }
                     ?.let { setRequestProperty("User-Agent", it) }
@@ -856,8 +970,22 @@ class Tier2Cache(
          * "Clear saved data" — the only deletion path.
          */
         const val DEFAULT_MAX_BYTES = 4L * 1024 * 1024 * 1024
-        /** Never buffer more than this per response (memory safety). */
-        const val DEFAULT_MAX_SINGLE_RESPONSE = 25 * 1024 * 1024
+        /**
+         * Per-response store limit (Phase 7 item 7): raised from 25 MB to
+         * 100 MB per spec. Responses with a KNOWN length up to this size are
+         * buffered and stored; larger ones stream through without storing.
+         * Unknown-length responses are probe-read up to PROBE_WINDOW_BYTES
+         * first (memory safety) and only buffered when they end inside it.
+         */
+        const val DEFAULT_MAX_SINGLE_RESPONSE = 100 * 1024 * 1024
+        /**
+         * In-memory probe window for unknown-length (gzip/chunked) responses
+         * (Phase 7 item 7). Everything that ends inside this window is served
+         * + stored normally (this is what keeps gzipped JSON API responses
+         * cacheable — the platform hides Content-Length when it gunzips);
+         * anything larger streams through as prefix + rest, no double download.
+         */
+        const val PROBE_WINDOW_BYTES = 4 * 1024 * 1024
         const val MAX_CONSECUTIVE_FAILURES = 3
         /** Slack added to the cap check for meta files + filesystem overhead. */
         private const val META_OVERHEAD_BYTES = 4L * 1024

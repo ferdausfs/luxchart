@@ -119,6 +119,17 @@ object Policy {
     )
 
     /**
+     * TRUE for always-streaming content types (Phase 7 item 7): these are
+     * NEVER buffered and NEVER stored — the raw stream is passed straight
+     * through to the WebView, which owns the connection. Pure, tested.
+     */
+    fun isStreamingType(contentType: String?): Boolean {
+        if (contentType.isNullOrBlank()) return false
+        val lower = contentType.trim().lowercase()
+        return STREAMING_TYPES.any { lower.contains(it) }
+    }
+
+    /**
      * Content-type prefixes eligible for the offline disk cache. The mandated
      * set (JSON/JS/CSS/fonts/images) PLUS text/html for luxalgo pages so the
      * app shell itself can be shown offline (Phase 6), PLUS the Phase 7 item
