@@ -78,6 +78,119 @@ object Policy {
         val payload: String
     )
 
+    // ---- Tier-2 offline cache policy (pure, tested) --------------------------
+
+    /** URL substrings (lower-cased match on path+query) that must NEVER be cached. */
+    private val NEVER_CACHE_URL_TOKENS = listOf(
+        "auth", "login", "token", "session", "payment"
+    )
+
+    /** Content types that are always streaming — never buffered/cached. */
+    private val STREAMING_TYPES = listOf(
+        "text/event-stream", "application/grpc", "application/stream+json"
+    )
+
+    /**
+     * Content-type prefixes eligible for the offline disk cache. This is the
+     * mandated set (JSON/JS/CSS/fonts/images) PLUS text/html for luxalgo pages
+     * so the app shell itself can be shown offline (documented deviation that
+     * makes the whole offline feature actually work end to end).
+     */
+    private val STORABLE_TYPES = listOf(
+        "application/json",
+        "text/javascript", "application/javascript", "application/x-javascript",
+        "text/css",
+        "font/", "application/font-woff", "application/vnd.ms-fontobject",
+        "application/x-font-ttf", "application/x-font-opentype",
+        "image/",
+        "text/html"
+    )
+
+    /**
+     * Request-level cache-skip rules. TRUE means: never touch the cache for
+     * this request (just let the WebView do its default thing).
+     * Never: non-GET, Authorization header, WebSocket upgrade, non-http(s),
+     * and URLs containing auth/login/token/session/payment.
+     */
+    fun shouldSkipRequest(
+        method: String?,
+        url: String?,
+        requestHeaders: Map<String, String>
+    ): Boolean {
+        if (method.isNullOrBlank() || !method.equals("GET", ignoreCase = true)) return true
+        if (url.isNullOrBlank()) return true
+        val u = url.trim().lowercase()
+        if (!u.startsWith("https://") && !u.startsWith("http://")) return true // incl. ws/wss
+        if (requestHeaders.keys.any { it.equals("Authorization", ignoreCase = true) }) return true
+        if (requestHeaders.entries.any {
+                it.key.equals("Upgrade", ignoreCase = true) &&
+                    it.value.equals("websocket", ignoreCase = true)
+            }
+        ) return true
+        val pathAndQuery = u.substringAfter("://")
+        return NEVER_CACHE_URL_TOKENS.any { pathAndQuery.contains(it) }
+    }
+
+    /**
+     * Response-level store rules: only 200s without Set-Cookie, non-streaming,
+     * with a storable content type. TRUE means eligible to save to disk.
+     */
+    fun shouldStoreResponse(
+        statusCode: Int,
+        responseHeaders: Map<String, List<String>>
+    ): Boolean {
+        if (statusCode != 200) return false
+        if (responseHeaders.keys.any { it.equals("Set-Cookie", ignoreCase = true) }) return false
+        val contentType = responseHeaders.entries
+            .firstOrNull { it.key.equals("Content-Type", ignoreCase = true) }
+            ?.value?.firstOrNull()?.lowercase() ?: return false
+        if (STREAMING_TYPES.any { contentType.contains(it) }) return false
+        return STORABLE_TYPES.any { contentType.startsWith(it) }
+    }
+
+    /**
+     * Cache-key normalization: lower-case scheme+host, drop the fragment,
+     * drop the default port (80/443), drop an empty query separator, and
+     * sort query parameters for a stable key. Path case is preserved.
+     * Returns null when the URL cannot be parsed (=> do not cache).
+     */
+    fun normalizeUrl(url: String?): String? {
+        if (url.isNullOrBlank()) return null
+        return try {
+            val uri = java.net.URI(url.trim())
+            val scheme = uri.scheme?.lowercase() ?: return null
+            val host = uri.host?.lowercase() ?: return null
+            val defaultPort = when (scheme) { "http" -> 80; "https" -> 443; else -> null }
+            val port = if (uri.port != -1 && uri.port != defaultPort) ":${uri.port}" else ""
+            val path = uri.rawPath ?: ""
+            val query = uri.rawQuery
+                ?.split('&')
+                ?.filter { it.isNotEmpty() }
+                ?.sorted()
+                ?.joinToString("&")
+                ?.takeIf { it.isNotEmpty() }
+                ?.let { "?$it" } ?: ""
+            "$scheme://$host$port$path$query"
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Final cache key: SHA-256 of "METHOD|normalized-url" as a hex string
+     * (filesystem-safe, no separators from the URL survive).
+     */
+    fun cacheKey(method: String, url: String): String? {
+        val normalized = normalizeUrl(url) ?: return null
+        return sha256Hex("$method|".uppercase() + normalized)
+    }
+
+    private fun sha256Hex(input: String): String {
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+        return digest.digest(input.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+    }
+
     /**
      * Desktop user-agent built at runtime from the system WebView UA.
      *

@@ -143,4 +143,152 @@ class PolicyTest {
             assertEquals(it, null, Policy.dataUrlParts(it))
         }
     }
+
+    // ---- Tier-2 cache: skip rules -------------------------------------------
+
+    private val noHeaders = emptyMap<String, String>()
+
+    @Test
+    fun `only plain GET requests are cacheable`() {
+        val u = "https://vela.luxalgo.com/api/chart"
+        assertFalse(Policy.shouldSkipRequest("GET", u, noHeaders))
+        assertTrue(Policy.shouldSkipRequest("POST", u, noHeaders))
+        assertTrue(Policy.shouldSkipRequest("HEAD", u, noHeaders))
+        assertTrue(Policy.shouldSkipRequest("PUT", u, noHeaders))
+        assertTrue(Policy.shouldSkipRequest(null, u, noHeaders))
+        assertTrue(Policy.shouldSkipRequest("", u, noHeaders))
+    }
+
+    @Test
+    fun `authorization header forces a skip`() {
+        val u = "https://vela.luxalgo.com/api/chart"
+        assertTrue(Policy.shouldSkipRequest("GET", u, mapOf("Authorization" to "Bearer x")))
+        assertTrue(Policy.shouldSkipRequest("GET", u, mapOf("AUTHORIZATION" to "Bearer x")))
+    }
+
+    @Test
+    fun `sensitive url tokens force a skip`() {
+        listOf(
+            "https://vela.luxalgo.com/api/auth/me",
+            "https://vela.luxalgo.com/login",
+            "https://vela.luxalgo.com/api?token=abc",
+            "https://vela.luxalgo.com/session/refresh",
+            "https://vela.luxalgo.com/checkout/payment"
+        ).forEach { assertTrue(it, Policy.shouldSkipRequest("GET", it, noHeaders)) }
+    }
+
+    @Test
+    fun `normal chart api urls are not skipped`() {
+        listOf(
+            "https://vela.luxalgo.com/api/v1/candles?symbol=BTCUSDT",
+            "https://vela.luxalgo.com/static/js/app.js",
+            "https://www.luxalgo.com/indicators/list"
+        ).forEach { assertFalse(it, Policy.shouldSkipRequest("GET", it, noHeaders)) }
+    }
+
+    @Test
+    fun `non http schemes and websocket upgrades force a skip`() {
+        assertTrue(Policy.shouldSkipRequest("GET", "wss://vela.luxalgo.com/ws", noHeaders))
+        assertTrue(Policy.shouldSkipRequest("GET", "ws://vela.luxalgo.com/ws", noHeaders))
+        assertTrue(Policy.shouldSkipRequest("GET", "file:///x", noHeaders))
+        assertTrue(
+            Policy.shouldSkipRequest(
+                "GET", "https://vela.luxalgo.com/ws", mapOf("Upgrade" to "websocket")
+            )
+        )
+    }
+
+    @Test
+    fun `response store rules`() {
+        val ok = mapOf("Content-Type" to listOf("application/json; charset=utf-8"))
+        assertTrue(Policy.shouldStoreResponse(200, ok))
+        assertFalse(Policy.shouldStoreResponse(204, ok))
+        assertFalse(Policy.shouldStoreResponse(301, ok))
+        assertFalse(Policy.shouldStoreResponse(404, ok))
+        assertTrue(
+            Policy.shouldStoreResponse(200, mapOf("content-type" to listOf("text/css")))
+        )
+        assertTrue(
+            Policy.shouldStoreResponse(200, mapOf("Content-Type" to listOf("image/webp")))
+        )
+        assertTrue(
+            Policy.shouldStoreResponse(200, mapOf("Content-Type" to listOf("text/html")))
+        )
+        assertFalse(
+            Policy.shouldStoreResponse(
+                200, mapOf("Content-Type" to listOf("application/json"), "Set-Cookie" to listOf("sid=1"))
+            )
+        )
+        assertFalse(
+            Policy.shouldStoreResponse(
+                200, mapOf("Content-Type" to listOf("text/event-stream"))
+            )
+        )
+        assertFalse(
+            Policy.shouldStoreResponse(
+                200, mapOf("Content-Type" to listOf("application/octet-stream"))
+            )
+        )
+        assertFalse(Policy.shouldStoreResponse(200, emptyMap()))
+    }
+
+    // ---- Tier-2 cache: key normalization ------------------------------------
+
+    @Test
+    fun `normalization lowercases scheme host strips fragment and default port`() {
+        assertEquals(
+            "https://vela.luxalgo.com/chart",
+            Policy.normalizeUrl("https://Vela.LuxAlgo.com:443/chart#fragment")
+        )
+        assertEquals(
+            "http://vela.luxalgo.com/x",
+            Policy.normalizeUrl("http://VELA.luxalgo.com:80/x")
+        )
+    }
+
+    @Test
+    fun `normalization sorts query params and drops empty query`() {
+        assertEquals(
+            "https://vela.luxalgo.com/api?a=1&b=2",
+            Policy.normalizeUrl("https://vela.luxalgo.com/api?b=2&a=1")
+        )
+        assertEquals(
+            "https://vela.luxalgo.com/api",
+            Policy.normalizeUrl("https://vela.luxalgo.com/api?")
+        )
+        assertEquals(
+            "https://vela.luxalgo.com/api?a=1",
+            Policy.normalizeUrl("https://vela.luxalgo.com/api?a=1&&")
+        )
+    }
+
+    @Test
+    fun `normalization preserves path case and keeps non-default ports`() {
+        assertEquals(
+            "https://vela.luxalgo.com/Chart/ID",
+            Policy.normalizeUrl("https://vela.luxalgo.com/Chart/ID")
+        )
+        assertEquals(
+            "https://vela.luxalgo.com:8443/api",
+            Policy.normalizeUrl("https://vela.luxalgo.com:8443/api")
+        )
+    }
+
+    @Test
+    fun `malformed urls normalize to null`() {
+        listOf(null, "", "   ", "https://vela luxalgo.com/x").forEach {
+            assertEquals(it, null, Policy.normalizeUrl(it))
+        }
+    }
+
+    @Test
+    fun `cache key is deterministic method sensitive and hex only`() {
+        val k1 = Policy.cacheKey("GET", "https://Vela.LuxAlgo.com/api?a=1&b=2#top")
+        val k2 = Policy.cacheKey("GET", "https://vela.luxalgo.com/api?b=2&a=1")
+        assertEquals(k1, k2)
+        assertEquals(64, k1!!.length)
+        assertTrue(k1.all { it.isDigit() || it in 'a'..'f' })
+        assertTrue(Policy.cacheKey("POST", "https://vela.luxalgo.com/api") != k1)
+        assertEquals(null, Policy.cacheKey("GET", "https://vela luxalgo.com"))
+    }
 }
