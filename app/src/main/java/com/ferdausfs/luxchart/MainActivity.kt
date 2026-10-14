@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
+import android.graphics.Bitmap
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
@@ -23,6 +24,7 @@ import android.view.ViewGroup
 import android.view.WindowManager
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.URLUtil
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
@@ -78,6 +80,10 @@ class MainActivity : ComponentActivity() {
     private var pendingErrorUrl: String? = null
     private var reducedMotion = false
     private var networkCallbackRegistered = false
+    private var renderCrashCount = 0
+
+    /** Last real (http/https) page URL — kept current in onPageStarted. */
+    private var currentUrl: String = START_URL
 
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
     private var pendingDownload: PendingDownload? = null
@@ -147,36 +153,22 @@ class MainActivity : ComponentActivity() {
         splashScreen.setKeepOnScreenCondition { !contentReady }
 
         buildLayout()
+        createAndAttachWebView()
         setContentView(rootLayout)
         applyEdgeToEdgeAndInsets()
         onBackPressedDispatcher.addCallback(this, backCallback)
 
-        configureWebView()
-        webView.webViewClient = LuxChartWebViewClient()
-        webView.webChromeClient = LuxChartWebChromeClient()
-        webView.addJavascriptInterface(ErrorPageBridge(), "LuxBridge")
-        webView.setDownloadListener { url, ua, disposition, mime, _ ->
-            handleDownload(url, ua, disposition, mime)
-        }
-
-        // Persistent login (feature 1): accept cookies incl. third-party (OAuth).
-        CookieManager.getInstance().apply {
-            setAcceptCookie(true)
-            setAcceptThirdPartyCookies(webView, true)
-        }
-
         if (savedInstanceState != null) {
             errorShowing = savedInstanceState.getBoolean(KEY_ERROR_SHOWING, false)
             pendingErrorUrl = savedInstanceState.getString(KEY_ERROR_URL)
-            if (errorShowing) {
-                webView.loadUrl("file:///android_asset/error.html")
-                contentReady = true
-                revealContent()
-            } else {
-                webView.restoreState(savedInstanceState)
-            }
+            currentUrl = savedInstanceState.getString(KEY_CURRENT_URL) ?: currentUrl
+        }
+        if (errorShowing) {
+            showErrorPage()
         } else {
-            webView.loadUrl(START_URL)
+            // First launch, process-death restore and crash recovery all
+            // funnel through the same single START/current URL.
+            webView.loadUrl(currentUrl)
         }
     }
 
@@ -221,14 +213,6 @@ class MainActivity : ComponentActivity() {
         rootLayout = FrameLayout(this).apply {
             setBackgroundColor(BG_COLOR)
         }
-        webView = WebView(this).apply {
-            layoutParams = FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-            )
-            setBackgroundColor(BG_COLOR)
-        }
-        rootLayout.addView(webView)
         progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
             layoutParams = FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(3)
@@ -239,6 +223,53 @@ class MainActivity : ComponentActivity() {
             visibility = View.GONE
         }
         rootLayout.addView(progressBar)
+    }
+
+    /**
+     * Builds a fresh WebView, attaches it below the progress bar and wires up
+     * the exact same settings, clients, bridges and cookie config every time.
+     * Used on first launch AND after a renderer crash (never crash).
+     */
+    private fun createAndAttachWebView() {
+        webView = WebView(this).apply {
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+            setBackgroundColor(BG_COLOR)
+        }
+        rootLayout.addView(webView, 0)
+        setupWebView(webView)
+    }
+
+    /** All per-instance WebView wiring lives here so recreation is identical. */
+    private fun setupWebView(wv: WebView) {
+        configureWebView(wv)
+        wv.webViewClient = LuxChartWebViewClient()
+        wv.webChromeClient = LuxChartWebChromeClient()
+        wv.addJavascriptInterface(ErrorPageBridge(), "LuxBridge")
+        wv.setDownloadListener { url, ua, disposition, mime, _ ->
+            handleDownload(url, ua, disposition, mime)
+        }
+        // Persistent login (feature 1): accept cookies incl. third-party (OAuth).
+        CookieManager.getInstance().apply {
+            setAcceptCookie(true)
+            setAcceptThirdPartyCookies(wv, true)
+        }
+    }
+
+    /**
+     * Destroys the current WebView (e.g. dead renderer) and rebuilds an
+     * identical one, reloading the last URL. Must be called on the main thread
+     * (onRenderProcessGone is always delivered there).
+     */
+    private fun recreateWebView() {
+        val dead = webView
+        (dead.parent as? ViewGroup)?.removeView(dead)
+        dead.stopLoading()
+        dead.destroy()
+        createAndAttachWebView()
+        webView.loadUrl(currentUrl)
     }
 
     // ---- Edge-to-edge, immersive mode, insets (features 2 + dark polish) -----
@@ -273,8 +304,8 @@ class MainActivity : ComponentActivity() {
     // ---- WebView configuration (features 5 + 6 + desktop mode) ---------------
 
     @SuppressLint("SetJavaScriptEnabled")
-    private fun configureWebView() {
-        webView.settings.apply {
+    private fun configureWebView(wv: WebView) {
+        wv.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
             databaseEnabled = true
@@ -290,17 +321,23 @@ class MainActivity : ComponentActivity() {
         }
         // View-level properties (not WebSettings): no overscroll glow/stretch,
         // no scrollbars over the charts.
-        webView.overScrollMode = View.OVER_SCROLL_NEVER
-        webView.isVerticalScrollBarEnabled = false
-        webView.isHorizontalScrollBarEnabled = false
+        wv.overScrollMode = View.OVER_SCROLL_NEVER
+        wv.isVerticalScrollBarEnabled = false
+        wv.isHorizontalScrollBarEnabled = false
         // Long-press on charts is a drawing-tool gesture in luxalgo — suppress
         // the text-selection popup so it is not stolen from the canvas.
-        webView.setOnLongClickListener { true }
+        wv.setOnLongClickListener { true }
     }
 
     // ---- Clients -------------------------------------------------------------
 
     private inner class LuxChartWebViewClient : WebViewClient() {
+
+        override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+            // Track the last real page URL for crash recovery, state restore
+            // and retry. Internal pages (file://) are never tracked.
+            if (url != null && url.startsWith("http")) currentUrl = url
+        }
 
         override fun shouldOverrideUrlLoading(
             view: WebView,
@@ -335,6 +372,22 @@ class MainActivity : ComponentActivity() {
         // page itself; replacing them with our offline screen would break logins
         // and bot-protection interstitials. The offline error page is shown
         // exclusively for real main-frame network errors above.
+
+        override fun onRenderProcessGone(
+            view: WebView,
+            detail: RenderProcessGoneDetail
+        ): Boolean {
+            // The WebView renderer died (OOM, GPU driver, site bug). Returning
+            // false would kill the whole app — return true, destroy the dead
+            // WebView and rebuild an identical one that reloads the last URL.
+            renderCrashCount++
+            if (renderCrashCount > MAX_RENDER_CRASHES) {
+                showError(currentUrl, "Renderer crashed repeatedly")
+            } else {
+                recreateWebView()
+            }
+            return true
+        }
 
         override fun onPageFinished(view: WebView?, url: String?) {
             if (!errorShowing && url != null && !url.startsWith("file:")) {
@@ -444,19 +497,28 @@ class MainActivity : ComponentActivity() {
     private fun showError(failingUrl: String, message: String?) {
         pendingErrorUrl = failingUrl
         errorShowing = true
+        showErrorPage(message)
+    }
+
+    /** Loads the local offline/error page (optionally with an encoded reason). */
+    private fun showErrorPage(message: String? = null) {
         contentReady = true
         revealContent()
         progressBar.visibility = View.GONE
-        val raw = message?.take(140) ?: "The page failed to load"
-        val encoded = runCatching { URLEncoder.encode(raw, "UTF-8") }
-            .getOrDefault("Load+failed")
-        webView.loadUrl("file:///android_asset/error.html?msg=$encoded")
+        if (message == null) {
+            webView.loadUrl("file:///android_asset/error.html")
+        } else {
+            val encoded = runCatching { URLEncoder.encode(message.take(140), "UTF-8") }
+                .getOrDefault("Load+failed")
+            webView.loadUrl("file:///android_asset/error.html?msg=$encoded")
+        }
     }
 
     private fun retryLoading() {
         errorShowing = false
         val target = pendingErrorUrl ?: START_URL
         pendingErrorUrl = null
+        currentUrl = target
         progressBar.progress = 0
         webView.loadUrl(target)
     }
@@ -577,6 +639,8 @@ class MainActivity : ComponentActivity() {
         const val START_URL = "https://vela.luxalgo.com/chart"
         private const val KEY_ERROR_SHOWING = "lux.errorShowing"
         private const val KEY_ERROR_URL = "lux.errorUrl"
+        private const val KEY_CURRENT_URL = "lux.currentUrl"
+        private const val MAX_RENDER_CRASHES = 3
 
         private const val DESKTOP_USER_AGENT =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
