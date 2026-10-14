@@ -292,10 +292,31 @@ class MainActivity : ComponentActivity() {
     private val backCallback = object : OnBackPressedCallback(true) {
         override fun handleOnBackPressed() {
             when {
-                errorShowing -> finish()
+                // Phase 8 G6: on the error page, back should still reach a
+                // REAL page when the WebView's history has one (the failed
+                // navigation pushed entries); file:///internal entries do
+                // not count. Otherwise exit as before.
+                errorShowing -> {
+                    if (canGoBackToRealPage()) webView.goBack() else finish()
+                }
                 webView.canGoBack() -> webView.goBack()
                 else -> finish()
             }
+        }
+    }
+
+    /**
+     * Phase 8 G6: TRUE when the previous history entry is a real http(s)
+     * page (not the local error page, not an internal scheme).
+     */
+    private fun canGoBackToRealPage(): Boolean {
+        if (!::webView.isInitialized || !webView.canGoBack()) return false
+        return try {
+            val list = webView.copyBackForwardList()
+            val prev = list.getItemAtIndex(list.currentIndex - 1)
+            prev?.url?.startsWith("http") == true
+        } catch (e: Exception) {
+            false
         }
     }
 
@@ -416,10 +437,25 @@ class MainActivity : ComponentActivity() {
     override fun onPause() {
         // Persist session cookies to disk so logins survive process death.
         CookieManager.getInstance().flush()
+        // Phase 8 G5: standard WebView lifecycle — pause WEBVIEW-LOCAL
+        // rendering/execution while the Activity is paused. pauseTimers is
+        // deliberately NOT called: it would freeze the page's JS timers
+        // (price-alert checks run inside the page) for the whole process.
+        if (::webView.isInitialized) {
+            runCatching { webView.onPause() }
+        }
         // Phase 8 A1 (BUG A): remember where the user was so the next COLD
         // launch reopens the same page (chart, symbol, timeframe).
         runCatching { statePrefs.edit().putString(KEY_LAST_URL, currentUrl).apply() }
         super.onPause()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Phase 8 G5: mirror of onPause — the WebView resumes with the Activity.
+        if (::webView.isInitialized) {
+            runCatching { webView.onResume() }
+        }
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -574,6 +610,15 @@ class MainActivity : ComponentActivity() {
     private fun applyEdgeToEdgeAndInsets() {
         WindowCompat.setDecorFitsSystemWindows(window, false)
         window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS)
+        // Phase 8 G7: landscape on cutout devices must not letterbox — draw
+        // into the notch area (SHORT_EDGES, API 28+) and rely on the insets
+        // listener below to keep CONTENT clear of the cutout and bars.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            window.attributes = window.attributes.apply {
+                layoutInDisplayCutoutMode =
+                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            }
+        }
         val controller = WindowCompat.getInsetsController(window, webView)
         controller.isAppearanceLightStatusBars = false
         controller.isAppearanceLightNavigationBars = false
@@ -581,11 +626,18 @@ class MainActivity : ComponentActivity() {
         controller.systemBarsBehavior =
             WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
 
-        // Keep web content clear of system bars / keyboard on every API level.
+        // Keep web content clear of system bars / cutout / keyboard on every
+        // API level (the strictest of the three wins per edge).
         ViewCompat.setOnApplyWindowInsetsListener(rootLayout) { view, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            val cutout = insets.getInsets(WindowInsetsCompat.Type.displayCutout())
             val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
-            view.setPadding(bars.left, bars.top, bars.right, maxOf(bars.bottom, ime.bottom))
+            view.setPadding(
+                maxOf(bars.left, cutout.left, ime.left),
+                maxOf(bars.top, cutout.top),
+                maxOf(bars.right, cutout.right, ime.right),
+                maxOf(bars.bottom, cutout.bottom, ime.bottom)
+            )
             WindowInsetsCompat.CONSUMED
         }
         hideSystemBars()
