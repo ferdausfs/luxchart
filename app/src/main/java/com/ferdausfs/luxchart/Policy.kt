@@ -376,6 +376,29 @@ object Policy {
             .joinToString("") { "%02x".format(it) }
     }
 
+    // ---- Last-URL restore decision (Phase 8 A1, pure, tested) -----------------
+
+    /**
+     * TRUE => [url] may be restored as the start page on a COLD launch
+     * (BUG A fix): https only, host on the navigation allow-list, and the
+     * PATH must have no sensitive segment (auth/login/oauth/token/session/
+     * payment/checkout — the path-only segment rule; the query is never
+     * inspected). FALSE for everything else => caller falls back to
+     * START_URL. Internal pages (file:// error page) never qualify.
+     */
+    fun restoreAllowed(url: String?): Boolean {
+        if (url.isNullOrBlank()) return false
+        val trimmed = url.trim()
+        if (!trimmed.lowercase().startsWith("https://")) return false
+        val host = try {
+            java.net.URI(trimmed).host
+        } catch (e: Exception) {
+            return false
+        } ?: return false
+        if (!isAllowed(host)) return false
+        return !urlHasSensitiveSegment(trimmed)
+    }
+
     // ---- Crash-report sanitization (hotfix 1.6.1 item 4, pure, tested) -------
 
     /** Upper bound for the persisted crash text (keeps the dialog light). */

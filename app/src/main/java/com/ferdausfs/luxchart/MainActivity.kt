@@ -123,6 +123,15 @@ class MainActivity : ComponentActivity() {
     /** Last real (http/https) page URL — kept current in onPageStarted. */
     private var currentUrl: String = START_URL
 
+    /**
+     * Phase 8 A1 (BUG A): persists the last real page URL across full app
+     * restarts. Written on every page start and in onPause; read once on a
+     * cold launch (process-death restore keeps using the Bundle value). Only
+     * allow-listed https URLs without sensitive path segments are restored
+     * (Policy.restoreAllowed) — otherwise the app falls back to START_URL.
+     */
+    private val statePrefs by lazy { getSharedPreferences(STATE_PREFS, MODE_PRIVATE) }
+
     /** Phase 7 item 10: Volume-Down press timestamps for the 3-within-2s
      *  diagnostics gesture (works ONLINE and OFFLINE). */
     private val volumeDownTimestamps = ArrayDeque<Long>()
@@ -299,15 +308,25 @@ class MainActivity : ComponentActivity() {
         rootLayout.postDelayed({ maybeShowLastCrashDialog() }, CRASH_DIALOG_FALLBACK_MS)
 
         if (savedInstanceState != null) {
+            // Process death / rotation: the Bundle URL is the most recent —
+            // it wins over the persisted last-URL preference.
             errorShowing = savedInstanceState.getBoolean(KEY_ERROR_SHOWING, false)
             pendingErrorUrl = savedInstanceState.getString(KEY_ERROR_URL)
             currentUrl = savedInstanceState.getString(KEY_CURRENT_URL) ?: currentUrl
+        } else {
+            // Phase 8 A1 (BUG A): cold launch — return to where the user was
+            // (chart, symbol, timeframe) instead of always START_URL. The
+            // decision is pure (Policy.restoreAllowed) and unit-tested: only
+            // allow-listed https URLs without sensitive path segments are
+            // restored; anything else falls back to START_URL.
+            val stored = statePrefs.getString(KEY_LAST_URL, null)
+            if (Policy.restoreAllowed(stored)) currentUrl = stored!!
         }
         if (errorShowing) {
             showErrorPage()
         } else {
-            // First launch, process-death restore and crash recovery all
-            // funnel through the same single START/current URL.
+            // First launch, process-death restore, cold-start restore and
+            // crash recovery all funnel through the same single current URL.
             webView.loadUrl(currentUrl)
         }
 
@@ -341,6 +360,9 @@ class MainActivity : ComponentActivity() {
     override fun onPause() {
         // Persist session cookies to disk so logins survive process death.
         CookieManager.getInstance().flush()
+        // Phase 8 A1 (BUG A): remember where the user was so the next COLD
+        // launch reopens the same page (chart, symbol, timeframe).
+        runCatching { statePrefs.edit().putString(KEY_LAST_URL, currentUrl).apply() }
         super.onPause()
     }
 
@@ -552,7 +574,14 @@ class MainActivity : ComponentActivity() {
         override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
             // Track the last real page URL for crash recovery, state restore
             // and retry. Internal pages (file://) are never tracked.
-            if (url != null && url.startsWith("http")) currentUrl = url
+            if (url != null && url.startsWith("http")) {
+                currentUrl = url
+                // Phase 8 A1 (BUG A): persist on every page start too (the
+                // onPause write alone can miss a swipe-kill between loads).
+                // Only http(s) URLs reach here; restoreAllowed filters the
+                // rest at restore time.
+                runCatching { statePrefs.edit().putString(KEY_LAST_URL, url).apply() }
+            }
             // Phase 6 item 4: every new main-frame navigation resets the
             // saved-data marker until the interceptor decides (shell hit or
             // miss). Main thread here — banner text is main-thread UI state.
@@ -1357,6 +1386,10 @@ class MainActivity : ComponentActivity() {
         /** Crash-loop kill switch storage (hotfix 1.6.1 item 5). */
         private const val CRASH_PREFS = "luxchart-crashguard"
         private const val KEY_LAUNCH_CRASHES = "launch_crashes"
+
+        /** Phase 8 A1: last-page persistence (cold-start restore, BUG A). */
+        private const val STATE_PREFS = "luxchart-state"
+        private const val KEY_LAST_URL = "last_url"
         /** Page-visible duration after which a launch counts as successful. */
         private const val CRASH_RESET_AFTER_VISIBLE_MS = 10_000L
 
