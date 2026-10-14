@@ -13,4 +13,5 @@
     <string name="diag_share">Share</string>
     <string name="diag_close">Close</string>
     <string name="crash_dialog_title">Last crash report</string>
+    <string name="tier2_disabled_toast">Offline cache disabled after repeated crashes</string>
 </resources>

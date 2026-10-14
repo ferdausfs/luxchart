@@ -249,6 +249,20 @@ object Policy {
         }
     }
 
+    // ---- Crash-loop kill switch (hotfix 1.6.1 item 5, pure, tested) ----------
+
+    /**
+     * Consecutive launch crashes after which Tier 2 (the request
+     * interceptor) stays disabled for the run: if the app cannot reach a
+     * stable page with the cache active, the cache is the suspect. The
+     * counter resets once a page has been visible for 10 seconds, so the
+     * next successful run re-enables Tier 2.
+     */
+    const val CRASH_LOOP_LIMIT = 2
+
+    fun tier2KillSwitch(launchCrashCount: Int): Boolean =
+        launchCrashCount >= CRASH_LOOP_LIMIT
+
     /**
      * Desktop user-agent built at runtime from the system WebView UA.
      *

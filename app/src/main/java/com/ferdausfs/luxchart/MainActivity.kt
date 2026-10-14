@@ -125,6 +125,13 @@ class MainActivity : ComponentActivity() {
     /** Hotfix 1.6.1: shown-at-most-once guard for the last-crash dialog. */
     private var crashDialogShown = false
 
+    /**
+     * Hotfix 1.6.1 item 5: when consecutive launch crashes hit the limit,
+     * the Tier-2 interceptor returns null for this whole run (until the
+     * next successful run re-enables it).
+     */
+    private var tier2KilledByCrashLoop = false
+
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
     private var pendingDownload: PendingDownload? = null
     private var pendingBlob: PendingBlob? = null
@@ -220,6 +227,18 @@ class MainActivity : ComponentActivity() {
         // platform handler afterwards so the system crash flow is unchanged.
         installCrashFileHandler()
         super.onCreate(savedInstanceState)
+
+        // Hotfix 1.6.1 item 5: crash-loop kill switch. Every launch
+        // increments the counter; it is reset once a page stays visible for
+        // 10 s. Two consecutive failed launches disable the Tier-2
+        // interceptor for this run so the app can get back on its feet.
+        val crashPrefs = getSharedPreferences(CRASH_PREFS, MODE_PRIVATE)
+        val crashCount = crashPrefs.getInt(KEY_LAUNCH_CRASHES, 0) + 1
+        crashPrefs.edit().putInt(KEY_LAUNCH_CRASHES, crashCount).apply()
+        if (Policy.tier2KillSwitch(crashCount)) {
+            tier2KilledByCrashLoop = true
+            Toast.makeText(this, R.string.tier2_disabled_toast, Toast.LENGTH_SHORT).show()
+        }
 
         // Respect the system reduced-motion setting for all in-app animations.
         reducedMotion = Settings.Global.getFloat(
@@ -503,7 +522,7 @@ class MainActivity : ComponentActivity() {
                 // already covers offline for pages), and intercepting the
                 // document itself slows first paint and fights
                 // Cloudflare/login flows.
-                if (request.isForMainFrame) return null
+                if (request.isForMainFrame || tier2KilledByCrashLoop) return null
                 tier2Cache?.intercept(
                     request.method,
                     request.url.toString(),
@@ -694,6 +713,15 @@ class MainActivity : ComponentActivity() {
         // Hotfix 1.6.1 item 4: page painted (or the error page took over) —
         // safe moment to surface a saved crash report.
         rootLayout.post { maybeShowLastCrashDialog() }
+        // Hotfix 1.6.1 item 5: 10 s of visible page = successful launch.
+        // Reset the counter so the NEXT run has Tier 2 enabled again (the
+        // kill switch, if tripped, stays off for THIS run by design).
+        rootLayout.postDelayed({
+            runCatching {
+                getSharedPreferences(CRASH_PREFS, MODE_PRIVATE)
+                    .edit().putInt(KEY_LAUNCH_CRASHES, 0).apply()
+            }
+        }, CRASH_RESET_AFTER_VISIBLE_MS)
         if (reducedMotion) {
             rootLayout.alpha = 1f
             return
@@ -1195,6 +1223,12 @@ class MainActivity : ComponentActivity() {
         private const val LAST_CRASH_FILE = "last-crash.txt"
         /** Fallback for showing the saved-crash dialog if no page paints. */
         private const val CRASH_DIALOG_FALLBACK_MS = 4_000L
+
+        /** Crash-loop kill switch storage (hotfix 1.6.1 item 5). */
+        private const val CRASH_PREFS = "luxchart-crashguard"
+        private const val KEY_LAUNCH_CRASHES = "launch_crashes"
+        /** Page-visible duration after which a launch counts as successful. */
+        private const val CRASH_RESET_AFTER_VISIBLE_MS = 10_000L
 
         /** Cap for in-app blob/data saves — avoids OOM on absurd payloads. */
         private const val MAX_BLOB_BYTES = 80 * 1024 * 1024
