@@ -4,12 +4,15 @@ import android.animation.ValueAnimator
 import android.annotation.SuppressLint
 import android.app.DownloadManager
 import android.content.ActivityNotFoundException
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.graphics.Bitmap
+import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
 import android.net.ConnectivityManager
 import android.net.Network
@@ -41,6 +44,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import android.widget.ProgressBar
+import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -52,6 +56,7 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import android.app.AlertDialog
 import org.json.JSONObject
 import java.io.File
 import java.text.SimpleDateFormat
@@ -311,6 +316,14 @@ class MainActivity : ComponentActivity() {
         offlineBanner?.layoutParams = FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         )
+        // Long-press => offline-cache diagnostics (counters + recently skipped
+        // host/path — never query strings, cookies or tokens). Non-blocking:
+        // single taps still pass through to the charts.
+        offlineBanner?.setOnLongClickListener { v ->
+            v.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+            showDiagnosticsDialog()
+            true
+        }
         rootLayout.addView(offlineBanner, 1)
     }
 
@@ -733,6 +746,42 @@ class MainActivity : ComponentActivity() {
 
     private fun updateOfflineBanner() {
         offlineBanner?.visibility = if (isOnline) View.GONE else View.VISIBLE
+    }
+
+    /** Long-press on the offline banner: copyable/shareable cache diagnostics. */
+    private fun showDiagnosticsDialog() {
+        val summary = tier2Cache?.diagnostics?.summary() ?: return
+        val body = TextView(this).apply {
+            text = summary
+            textSize = 12f
+            typeface = Typeface.MONOSPACE
+            setTextColor(0xFFCBD5E1.toInt())
+            setPadding(dp(20), dp(14), dp(20), dp(4))
+            setTextIsSelectable(true)
+        }
+        val scroll = ScrollView(this).apply { addView(body) }
+        AlertDialog.Builder(this)
+            .setTitle("Offline cache diagnostics")
+            .setView(scroll)
+            .setPositiveButton(R.string.diag_copy) { _, _ ->
+                val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                cm.setPrimaryClip(
+                    ClipData.newPlainText("LuxChart offline diagnostics", summary)
+                )
+                Toast.makeText(this, R.string.diag_copied, Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton(R.string.diag_share) { _, _ ->
+                val send = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_TEXT, summary)
+                    putExtra(Intent.EXTRA_TITLE, "LuxChart offline diagnostics")
+                }
+                runCatching {
+                    startActivity(Intent.createChooser(send, getString(R.string.diag_share)))
+                }
+            }
+            .setNeutralButton(R.string.diag_close, null)
+            .show()
     }
 
     // ---- Allow-list + external browser ---------------------------------------
