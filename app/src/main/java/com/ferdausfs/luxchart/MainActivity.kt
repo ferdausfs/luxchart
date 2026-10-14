@@ -960,7 +960,8 @@ class MainActivity : ComponentActivity() {
 
     /** Long-press on the offline banner: copyable/shareable cache diagnostics. */
     private fun showDiagnosticsDialog() {
-        val summary = tier2Cache?.diagnostics?.summary() ?: return
+        // Phase 6 item 5: full summary incl. the main-page-shell section.
+        val summary = tier2Cache?.diagnosticsSummary() ?: return
         val body = TextView(this).apply {
             text = summary
             textSize = 12f

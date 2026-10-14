@@ -671,6 +671,70 @@ class Tier2Cache(
         return response
     }
 
+    /**
+     * Phase 6 item 5: full diagnostics = the Tier-2 summary PLUS the
+     * main-page-shell section (offline shell-serve count, last shadow-fetch
+     * result code, stored shells as host+path — never query strings, cookies
+     * or tokens — with size and age).
+     */
+    fun diagnosticsSummary(): String {
+        val sb = StringBuilder(diagnostics.summary())
+        sb.append("main-page shell (Phase 6)\n")
+        sb.append("offline shell serves: ").append(diagnostics.shellHits.get()).append('\n')
+        sb.append("last shadow-fetch: ").append(lastShellResult).append('\n')
+        val shells = shellEntriesSnapshot()
+        if (shells.isEmpty()) {
+            sb.append("stored shells: (none)\n")
+        } else {
+            sb.append("stored shells: ").append(shells.size).append('\n')
+            shells.take(MAX_SHELL_DIAG_LINES).forEach { s -> sb.append("  ").append(s).append('\n') }
+            if (shells.size > MAX_SHELL_DIAG_LINES) {
+                sb.append("  … (").append(shells.size - MAX_SHELL_DIAG_LINES).append(" more)\n")
+            }
+        }
+        return sb.toString()
+    }
+
+    /** One line per stored shell: "host/path — size — age". Query-free. */
+    private fun shellEntriesSnapshot(): List<String> = try {
+        val now = System.currentTimeMillis()
+        synchronized(lock) {
+            dir.listFiles()
+                ?.filter { it.isFile && it.name.endsWith(".meta") }
+                ?.mapNotNull { metaFile ->
+                    try {
+                        val meta = JSONObject(metaFile.readText())
+                        if (meta.optString("type") != "shell") return@mapNotNull null
+                        val url = meta.optString("url")
+                        val host = hostOf(url)
+                        val path = pathOf(url) // rawPath — no query string
+                        val size = meta.optLong("size", 0L)
+                        val ageMs = now - meta.optLong("saved-at", 0L)
+                        "$host$path — ${fmtBytes(size)} — age ${fmtAge(ageMs)}"
+                    } catch (e: Exception) {
+                        null
+                    }
+                }
+                ?.sorted()
+                ?: emptyList()
+        }
+    } catch (e: Exception) {
+        emptyList()
+    }
+
+    private fun fmtBytes(bytes: Long): String = when {
+        bytes >= 1L shl 20 -> "%.1f MB".format(bytes / 1048576.0)
+        bytes >= 1L shl 10 -> "%.1f KB".format(bytes / 1024.0)
+        else -> "$bytes B"
+    }
+
+    private fun fmtAge(ms: Long): String = when {
+        ms < 60_000L -> "${ms / 1000}s"
+        ms < 3_600_000L -> "${ms / 60_000}m"
+        ms < 86_400_000L -> "${ms / 3_600_000}h"
+        else -> "${ms / 86_400_000}d"
+    }
+
     // ---- Failure circuit breaker ----------------------------------------------
 
     private fun noteFailure() {
@@ -704,6 +768,9 @@ class Tier2Cache(
         /** Shadow-fetch timeouts (spec: 10 s). */
         private const val SHELL_CONNECT_TIMEOUT_MS = 10_000
         private const val SHELL_READ_TIMEOUT_MS = 10_000
+
+        /** Max shell lines printed in the diagnostics dialog. */
+        private const val MAX_SHELL_DIAG_LINES = 20
 
         /** Headers worth persisting and replaying (CORS included, nothing sensitive). */
         private val SAFE_RESPONSE_HEADERS = listOf(
