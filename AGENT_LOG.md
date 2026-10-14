@@ -8,7 +8,114 @@ files, commit hash, pending items, notes for next agent.
 SECURITY: never record tokens, passwords, keystore contents, base64 blobs, or
 secret values in this file. Secret *names* and file *names* are allowed.
 
+## Phase 7 — 2026-10-14 — SAVED DATA STAYS UNTIL I CLEAR IT: cache-first offline/online data cache (versionName 1.8.0)
+
+- **Agent/Tool:** GLM (Super Z CLI) acting as senior Android engineer
+- **Feature:** CACHE-FIRST data cache for luxalgo — anything loaded once
+  (chart candles, indicators, assets) is served instantly from phone storage
+  NEXT TIME, ONLINE TOO, and is NEVER deleted automatically; only
+  "Clear saved data" deletes. Signing/CI/applicationId, main-frame policy and
+  every hotfix-1.6.1 protection (no WebView access off-main,
+  try/catch(Throwable)->null, crash-loop kill switch) untouched.
+- **What changed (one commit per item, CI green on every push):**
+  1. CACHE-FIRST ONLINE: intercept() serves a stored entry immediately even
+     while online (hits counter); static assets never revalidated; API-like
+     types (json/ndjson/msgpack/protobuf/text-plain, pure
+     Policy.isApiLikeType) get ONE background refresh (2-thread executor,
+     one in-flight per key) overwriting the stored copy for next time;
+     no entry -> fetch+store+return. readFromDisk() shared by online and
+     offline serving.
+  2. NO AUTO DELETE: LRU eviction deleted outright. Policy.storeAllowedWithinCap
+     = hard stop for NEW stores at 4 GB (Tier2Cache.DEFAULT_MAX_BYTES);
+     existing entries never touched; one-time "Saved-data limit reached" toast
+     (onLimitReached callback -> main thread, AtomicBoolean once-guard reset by
+     Clear-saved-data); diagnostics keep the real saved-data size.
+  3. AUTHORIZATION ALLOWED: Authorization GETs are cached; the header is
+     forwarded to origin calls in MEMORY ONLY (never in disk meta — only
+     SAFE_RESPONSE_HEADERS persist, never logged, never in the key which is
+     METHOD+URL by construction); a failed authed refresh keeps the old entry.
+     README documents the single-user/app-private trade-off.
+  4. URL SKIP RULE: substring match REPLACED by PATH-ONLY SEGMENT equality
+     (Policy.SENSITIVE_PATH_SEGMENTS + urlHasSensitiveSegment): auth, oauth,
+     oauth2, login, logout, signin, signup, token, tokens, session, sessions,
+     payment, payments, checkout — never host, never query; unparseable fails
+     closed. /tokenizer, /blog/authors, ?token=... are NOT skipped.
+  5. STORE RULES: storable types gain text/plain, application/octet-stream,
+     application/wasm, application/x-protobuf, application/msgpack,
+     application/x-ndjson (svg already via image/). Set-Cookie responses ARE
+     stored (cookie header stripped from persisted meta automatically; fetched
+     cookies still applied to CookieManager). Never stored: non-GET, 3xx,
+     non-200, text/event-stream, grpc (containment also catches grpc-web).
+  6. KEY NORMALIZATION: Policy.NOISY_QUERY_PARAMS (_, t, ts, _t, timestamp,
+     cb, cachebust, nocache, rnd, random) dropped when building keys;
+     symbol/resolution/from/to/type kept; applies to GET and SHELL keys.
+  7. SPEED + NO DOUBLE DOWNLOAD: Accept-Encoding: identity removed (fetch +
+     shadow fetch; HttpURLConnection gunzips transparently, hiding
+     Content-Length). Store limit 25 MB -> 100 MB (largeHeap added so the
+     mandated buffering is memory-safe). Streaming types pass the LIVE stream
+     through (never buffered/stored); known length > 100 MB streams through;
+     UNKNOWN length probe-reads a 4 MB window (ends inside -> buffered+stored;
+     past it -> already-read prefix + remaining stream via SequenceInputStream,
+     connection closed when the WebView closes the stream). 4xx/5xx return the
+     REAL response (status, body, reasonPhrase) instead of null so the WebView
+     never re-requests. Content-Length lies guarded; mid-body IO errors still
+     degrade to null.
+  8. INTEGRITY: writeEntryAtomically = tmp + rename, body first, meta (with
+     body-length) LAST. Read side validates the length (readFromDisk AND
+     shellFor); corrupt/mismatched pair is DELETED and treated as a plain
+     MISS — never an exception, never toward the 3-failure disable. Legacy
+     v1.7.0 entries (no body-length) accepted so saved data survives upgrade.
+  9. DIAGNOSTICS: "stored" counts only entries really written to disk; new
+     counters cacheFirstHits (online), refreshUpdates, bytesServed from cache;
+     MainActivity.isOnline verified @Volatile (since Phase 6).
+  10. REQUEST LOG: 300-entry ring buffer of the last luxalgo requests seen by
+     shouldInterceptRequest (ALL methods incl. POST): time, method, sanitized
+     host+path (pure Policy.sanitizedRequestUrl — query KEY NAMES only, never
+     values/headers/cookies/tokens/bodies), status, content-type, size,
+     decision (HIT / STORED / REFRESHED / SKIP:<reason> / NETWORK —
+     Policy.skipReason explains skips). Online main frames log NETWORK (still
+     never intercepted). Reachable ONLINE: Volume-Down 3x within 2 s opens the
+     diagnostics + request-log dialog (Copy/Share/Close); banner long-press
+     kept.
+  11. JVM tests (Phase7PolicyTest): segment skip, skipReason table, store
+     rules, streaming types, noisy-param normalization + cacheKey equivalence,
+     4 GB cap decision, log sanitizer, API-like classification,
+     Authorization-not-skipped guard.
+  12. README "Offline & cache-first" rewritten + versionName 1.8.0.
+- **Touched files:** `Policy.kt`, `Tier2Cache.kt`, `MainActivity.kt`,
+  `AndroidManifest.xml` (largeHeap only), `strings.xml` (limit toast),
+  `README.md`, `app/build.gradle.kts`,
+  `app/src/test/.../Phase7PolicyTest.kt` (new),
+  `PolicyTest.kt`/`Phase6PolicyTest.kt` (updated for mandated rule changes)
+- **Commit hashes:** `1312f78` item 1 (#30) -> `2b547b7` item 2 (#31) ->
+  `e01b43e` item 3 (#32) -> `d28f4ed` item 4 (#33) -> `cb4176e` item 5 (#34)
+  -> `7337346` item 6 (#35) -> `e75b4f3` item 7 (#36) -> `aaa5c3f` item 8
+  (#37) -> `006ce2b` item 9 (#38) -> `ed05c68` item 10 (#39) -> `de7b41e`
+  item 11 (#41) -> `3a8da1d` item 12 (#42, versionName 1.8.0)
+  - this log commit: recorded as repository HEAD at push time
+- **KNOWN LIMITS (spec item 12):** POST bodies and WebSocket traffic are not
+  cacheable via shouldInterceptRequest (bodies never reach the interceptor;
+  ws/wss skipped) — live features need internet; page-side recomputation
+  (indicators) is the site's own JS — the app caches code + input data but
+  cannot force offline recomputation; cache-first static assets stay until
+  cleared (after a site redesign use Clear-saved-data once); sensitive PATH
+  segments never cached (never host/query); streaming types pass through
+  uncached; known >100 MB and unknown-length >4 MB probe bodies stream
+  through (no double download) uncached; Set-Cookie stored with the header
+  stripped from disk; noisy query params ignored in keys; corrupt entries =
+  delete + MISS; 3 consecutive failures disable Tier 2 for the session.
+- **Pending items:** none from the Phase 7 scope.
+- **Notes for next agent:** online main frames are STILL never intercepted
+  (only logged); cache-first serving and background refresh are the new
+  intercept contract — do not reintroduce revalidation of static assets; the
+  4 MB probe window is what keeps gzipped JSON cacheable (the platform hides
+  Content-Length when it gunzips) — do not "simplify" it away; Authorization
+  forwarding is in-memory only by design; keep new rules PURE in Policy.kt
+  with JVM tests. Do not touch applicationId `com.ferdausfs.luxchart`;
+  signing/CI unchanged.
+
 ---
+
 
 ## Phase 6 — 2026-10-14 — OFFLINE main-page shell caching: airplane mode opens the saved chart shell (versionName 1.7.0)
 
