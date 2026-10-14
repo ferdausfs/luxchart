@@ -1,8 +1,9 @@
 # LuxChart
 
 Lightweight native Android app (Kotlin, single Activity + WebView) that loads
-https://www.luxalgo.com/ and its web platform in a desktop-mode WebView, so the
-charts feel closer to a native app than the mobile browser. Personal use only.
+https://vela.luxalgo.com/chart (the LuxAlgo chart page) in a desktop-mode
+WebView, so the charts feel closer to a native app than the mobile browser.
+Personal use only.
 
 ## Features
 - **Persistent login** — cookies (incl. third-party for OAuth) accepted and
@@ -69,6 +70,12 @@ Secret values are never printed. The keystore is never committed.
 ## Versioning
 - `versionName` — defined once in `app/build.gradle.kts` (`APP_VERSION_NAME`)
 - `versionCode` — `github.run_number` in CI (locally defaults to 1)
+
+## Start URL
+`https://vela.luxalgo.com/chart` — defined once (`START_URL` in
+`MainActivity.kt`); used for first launch, error-retry and WebView
+re-creation. Navigation allow-list covers it (`vela.luxalgo.com` is a
+`luxalgo.com` subdomain).
 
 ## Project rules
 - `applicationId` `com.ferdausfs.luxchart` is permanent — never change
