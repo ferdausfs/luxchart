@@ -226,4 +226,31 @@ class Phase9PolicyTest {
         assertTrue(Policy.isAllowed("paypal.com"))
         assertTrue(Policy.isAllowed("challenges.cloudflare.com"))
     }
+
+    // ---- F21: isRealPageUrl ------------------------------------------------------
+
+    @Test
+    fun `https pages are real back targets`() {
+        assertTrue(Policy.isRealPageUrl("https://vela.luxalgo.com/chart"))
+        assertTrue(Policy.isRealPageUrl("HTTPS://vela.luxalgo.com/chart"))
+        assertTrue(Policy.isRealPageUrl("  https://www.luxalgo.com/x "))
+    }
+
+    @Test
+    fun `http history entries are NOT back targets (would just re-error)`() {
+        // usesCleartextTraffic=false means a cleartext entry can never reload.
+        assertFalse(Policy.isRealPageUrl("http://vela.luxalgo.com/chart"))
+    }
+
+    @Test
+    fun `internal schemes and junk are never back targets`() {
+        assertFalse(Policy.isRealPageUrl("file:///android_asset/error.html"))
+        assertFalse(Policy.isRealPageUrl("about:blank"))
+        assertFalse(Policy.isRealPageUrl("blob:https://vela.luxalgo.com/abc"))
+        assertFalse(Policy.isRealPageUrl("data:text/html,hi"))
+        assertFalse(Policy.isRealPageUrl("javascript:void(0)"))
+        assertFalse(Policy.isRealPageUrl(null))
+        assertFalse(Policy.isRealPageUrl(""))
+        assertFalse(Policy.isRealPageUrl("   "))
+    }
 }

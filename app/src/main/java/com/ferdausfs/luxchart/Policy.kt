@@ -810,6 +810,19 @@ object Policy {
     // ---- Error-page decision (Phase 9 F3, pure, tested) ------------------------
 
     /**
+     * Phase 9 F21 — TRUE when [url] is a REAL page that can actually be
+     * re-loaded: https only. An `http://` history entry can never come back
+     * (usesCleartextTraffic=false blocks it — going back would just re-error),
+     * and file:// (the local error page), blob:, data:, about: are internal.
+     * Used by the error-page back rule (Phase 8 G6). Pure + tested.
+     */
+    fun isRealPageUrl(url: String?): Boolean {
+        if (url.isNullOrBlank()) return false
+        return url.trim().lowercase().startsWith("https://")
+    }
+
+
+    /**
      * WebViewClient.ERROR_UNKNOWN — Chromium's catch-all error code (-1).
      * Duplicated as a constant because [Policy] must stay free of Android
      * imports (JVM-tested).

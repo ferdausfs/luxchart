@@ -344,15 +344,16 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * Phase 8 G6: TRUE when the previous history entry is a real http(s)
-     * page (not the local error page, not an internal scheme).
+     * Phase 8 G6: TRUE when the previous history entry is a real https page
+     * (not the local error page, not an internal scheme, not a cleartext
+     * entry that can never reload — Phase 9 F21 pure rule).
      */
     private fun canGoBackToRealPage(): Boolean {
         if (!::webView.isInitialized || !webView.canGoBack()) return false
         return try {
             val list = webView.copyBackForwardList()
             val prev = list.getItemAtIndex(list.currentIndex - 1)
-            prev?.url?.startsWith("http") == true
+            Policy.isRealPageUrl(prev?.url)
         } catch (e: Exception) {
             false
         }
