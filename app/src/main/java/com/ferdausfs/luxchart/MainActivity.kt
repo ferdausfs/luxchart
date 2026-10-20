@@ -1230,10 +1230,19 @@ class MainActivity : ComponentActivity() {
         }, CRASH_RESET_AFTER_VISIBLE_MS)
         if (reducedMotion) {
             rootLayout.alpha = 1f
+            rootLayout.scaleX = 1f
+            rootLayout.scaleY = 1f
             return
         }
+        // Phase 9 U3: the existing 220 ms splash handoff fade gains a subtle
+        // 0.98 -> 1.0 scale for the premium feel. Transform-only (render
+        // change, never a layout shift), standard easing, and instant when
+        // the system requests reduced motion.
         rootLayout.alpha = 0f
-        rootLayout.animate().alpha(1f).setDuration(220).withEndAction(null).start()
+        rootLayout.scaleX = 0.98f
+        rootLayout.scaleY = 0.98f
+        rootLayout.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(220)
+            .withEndAction(null).start()
     }
 
     // ---- Crash reporting (hotfix 1.6.1 item 4) --------------------------------
