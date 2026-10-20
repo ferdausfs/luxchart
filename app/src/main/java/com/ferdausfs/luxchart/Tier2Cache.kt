@@ -1266,7 +1266,7 @@ class Tier2Cache(
             diagnostics.diskBytes.set(0)
         }
         limitToastShown.set(false) // the 4 GB toast may fire again after a refill
-        shellThrottle.clear()
+        synchronized(shellThrottleLock) { shellThrottle.clear() }
         lastShellResult = "(cleared saved data)"
     }
 
@@ -1294,8 +1294,16 @@ class Tier2Cache(
     /** One-time "Saved-data limit reached" toast guard (Phase 7 item 2). */
     private val limitToastShown = AtomicBoolean(false)
 
-    /** key(normalized URL) -> last shadow-fetch attempt (ms). */
-    private val shellThrottle = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    /**
+     * key(normalized URL) -> last shadow-fetch attempt (ms).
+     * Phase 9 F16: the throttle map is now CAPPED at
+     * [SHELL_THROTTLE_MAX_KEYS] with oldest-inserted eviction — one entry per
+     * distinct shell URL is tiny, but it used to grow without bound within a
+     * run. Synchronized (a small lock) because clear() may run on another
+     * thread than the single shadow-fetch executor.
+     */
+    private val shellThrottle = LinkedHashMap<String, Long>()
+    private val shellThrottleLock = Any()
 
     /** Last shadow-fetch outcome for diagnostics: stored / skipped:reason / failed:code. */
     @Volatile
@@ -1333,14 +1341,21 @@ class Tier2Cache(
             return
         }
         val now = System.currentTimeMillis()
-        if (!Policy.shellThrottleAllowed(
+        val throttled = synchronized(shellThrottleLock) {
+            !Policy.shellThrottleAllowed(
                 shellThrottle[key] ?: 0L, now, Policy.SHELL_THROTTLE_MS
             )
-        ) {
+        }
+        if (throttled) {
             lastShellResult = "skipped:throttled"
             return
         }
-        shellThrottle[key] = now // claim the slot BEFORE the network call
+        synchronized(shellThrottleLock) {
+            shellThrottle[key] = now // claim the slot BEFORE the network call
+            while (shellThrottle.size > SHELL_THROTTLE_MAX_KEYS) {
+                shellThrottle.remove(shellThrottle.keys.first()) // oldest inserted
+            }
+        }
 
         val conn = try {
             (URL(url).openConnection() as HttpURLConnection).apply {
@@ -1689,6 +1704,9 @@ class Tier2Cache(
 
         /** Max shell lines printed in the diagnostics dialog. */
         private const val MAX_SHELL_DIAG_LINES = 20
+
+        /** Phase 9 F16: hard cap for the shell shadow-fetch throttle map. */
+        private const val SHELL_THROTTLE_MAX_KEYS = 64
 
         /** Headers worth persisting and replaying (CORS included, nothing sensitive). */
         private val SAFE_RESPONSE_HEADERS = listOf(
