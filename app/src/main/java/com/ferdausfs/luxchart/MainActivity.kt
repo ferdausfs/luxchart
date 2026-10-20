@@ -103,6 +103,15 @@ class MainActivity : ComponentActivity() {
     private var savedDataChip: TextView? = null
     private var savedChipHideRunnable: Runnable? = null
 
+    /**
+     * Phase 9 F1: monotonically increasing chip generation. A fade-out's
+     * withEndAction may only GONE the chip if no newer show/hide cycle
+     * started meanwhile — without this guard, a showChip() arriving during
+     * the 220 ms hide fade ("Updating…" settling back to "Saved data") left
+     * the stale end action armed and the pill vanished instead of settling.
+     */
+    private var chipGeneration = 0
+
     private var contentReady = false
     private var contentRevealed = false
     private var errorShowing = false
@@ -589,12 +598,21 @@ class MainActivity : ComponentActivity() {
      */
     private fun showChip(text: String, holdMs: Long) {
         val chip = savedDataChip ?: return
+        // Phase 9 F1: bump the generation first — any fade end-action armed
+        // by an older cycle is now stale and will be ignored.
+        chipGeneration++
         savedChipHideRunnable?.let { rootLayout.removeCallbacks(it) }
+        // Phase 9 F1: a still-running hide fade from the previous cycle must
+        // not fire its end action (GONE) over this show — cancel it. The
+        // generation guard above makes the possibly-run end action harmless.
+        chip.animate().cancel()
         chip.text = text
         chip.setTextColor(
             if (text == getString(R.string.chip_updating)) CHIP_UPDATING_TEXT else CHIP_SAVED_TEXT
         )
-        if (chip.visibility != View.VISIBLE) {
+        // Fresh show OR a hide fade that was interrupted mid-flight (alpha
+        // stuck below 1): (re-)fade in so the pill settles fully visible.
+        if (chip.visibility != View.VISIBLE || chip.alpha < 1f) {
             chip.visibility = View.VISIBLE
             if (reducedMotion) {
                 chip.alpha = 1f
@@ -608,13 +626,20 @@ class MainActivity : ComponentActivity() {
 
     private fun hideChip() {
         val chip = savedDataChip ?: return
+        chipGeneration++
+        val gen = chipGeneration
         if (reducedMotion) {
             chip.visibility = View.GONE
             chip.alpha = 0f
         } else {
             chip.animate().alpha(0f).setDuration(220)
                 .withEndAction {
-                    chip.visibility = View.GONE
+                    // Phase 9 F1: only the LATEST cycle may hide the pill —
+                    // a showChip() that raced this fade has already bumped
+                    // the generation and owns the chip now.
+                    if (gen == chipGeneration) {
+                        chip.visibility = View.GONE
+                    }
                 }.start()
         }
     }
