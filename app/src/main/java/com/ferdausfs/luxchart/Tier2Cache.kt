@@ -91,6 +91,14 @@ class Tier2Cache(
         /** Phase 8 G1: challenge/rate-limit responses skipped (WebView takes over). */
         val challengeSkips = AtomicLong()
 
+        /**
+         * Phase 9 F14: listener/counter failures that were deliberately
+         * swallowed (onCacheServed ×2, onRefreshComplete) — the swallows are
+         * CORRECT (a chip glitch must never break serving) but they used to be
+         * INVISIBLE. Now counted and surfaced in summary().
+         */
+        val listenerErrors = AtomicLong()
+
         /** Phase 8 G2: background TTL revalidations (304 touched / 200 overwritten). */
         val revalidations = AtomicLong()
 
@@ -136,6 +144,8 @@ class Tier2Cache(
             }
             sb.append('\n')
             sb.append("static TTL revalidations: ").append(revalidations.get()).append('\n')
+            sb.append("listener errors (swallowed, counted since F14): ")
+                .append(listenerErrors.get()).append('\n')
             sb.append("bytes served from cache: ").append(fmt(bytesServed.get())).append('\n')
             sb.append("disk: ").append(fmt(diskBytes.get())).append('\n')
             sb.append("consecutive fetch failures: ").append(failures.get()).append('\n')
@@ -387,7 +397,10 @@ class Tier2Cache(
                     // Phase 8 UI: drive the Saved-data/Updating chip.
                     val apiLike = Policy.isApiLikeType(hit.contentType)
                     val refreshing = apiLike && key != null
-                    try { onCacheServed?.invoke(apiLike, refreshing) } catch (e: Exception) { }
+                    // Phase 9 F14: the swallow stays (a chip glitch must never
+                    // break serving) but is now counted in diagnostics.
+                    try { onCacheServed?.invoke(apiLike, refreshing) }
+                    catch (e: Exception) { diagnostics.listenerErrors.incrementAndGet() }
                     if (key != null && Policy.isApiLikeType(hit.contentType)) {
                         scheduleBackgroundRefresh(methodNN, urlNN, key, requestHeaders ?: emptyMap(), userAgent)
                     } else if (
@@ -423,7 +436,9 @@ class Tier2Cache(
                     )
                     // Phase 8 UI: offline saved-data serve of chart data.
                     if (Policy.isApiLikeType(served.contentType)) {
-                        try { onCacheServed?.invoke(true, false) } catch (e: Exception) { }
+                        // Phase 9 F14: counted swallow — see onCacheServed above.
+                        try { onCacheServed?.invoke(true, false) }
+                        catch (e: Exception) { diagnostics.listenerErrors.incrementAndGet() }
                     }
                     served.response
                 } else {
@@ -435,7 +450,11 @@ class Tier2Cache(
             }
         } catch (e: Exception) {
             noteFailure()
-            recordRequest(method, url, 0, null, -1, "NETWORK")
+            // Phase 9 F14: this used to log decision "NETWORK", which LIED —
+            // a local exception (disk hiccup, parse error) is not a network
+            // event. SKIP:error says exactly what happened and keeps the
+            // request log honest.
+            recordRequest(method, url, 0, null, -1, "SKIP:error")
             return null
         }
     }
@@ -1217,7 +1236,9 @@ class Tier2Cache(
                     refreshInFlight.remove(key)
                     // Phase 8 UI: the "Updating…" chip can settle back to
                     // "Saved data" now (listener never throws).
-                    try { onRefreshComplete?.invoke() } catch (e: Exception) { }
+                    // Phase 9 F14: counted swallow — see onCacheServed above.
+                    try { onRefreshComplete?.invoke() }
+                    catch (e: Exception) { diagnostics.listenerErrors.incrementAndGet() }
                 }
             }
         } catch (e: Exception) {
