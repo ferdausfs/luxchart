@@ -59,6 +59,7 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
 import android.app.AlertDialog
 import android.widget.Button
 import android.widget.LinearLayout
@@ -702,12 +703,17 @@ class MainActivity : ComponentActivity() {
         // the canvas CSS lock now applies BEFORE the page's own scripts run,
         // for luxalgo origins only. The onPageFinished injection below stays
         // as the fallback (idempotent).
+        // Phase 9 F9: the call is feature-gated (WebViewFeature check) instead
+        // of relying on the blanket catch — same fallback behaviour, but the
+        // capability is now verified the documented way (lint RequiresFeature).
         try {
-            WebViewCompat.addDocumentStartJavaScript(
-                wv,
-                CANVAS_LOCK_SCRIPT,
-                setOf("https://*.luxalgo.com", "https://luxalgo.com")
-            )
+            if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+                WebViewCompat.addDocumentStartJavaScript(
+                    wv,
+                    CANVAS_LOCK_SCRIPT,
+                    setOf("https://*.luxalgo.com", "https://luxalgo.com")
+                )
+            }
         } catch (e: Exception) {
             // older WebView without support — the onPageFinished fallback covers it
         }
