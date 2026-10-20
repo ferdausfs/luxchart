@@ -8,6 +8,130 @@ files, commit hash, pending items, notes for next agent.
 SECURITY: never record tokens, passwords, keystore contents, base64 blobs, or
 secret values in this file. Secret *names* and file *names* are allowed.
 
+## Phase 9 — 2026-10-20 — Zero-bug audit (F1-F22) + UI polish U1-U4 (versionName 1.9.1)
+
+- **Agent/Tool:** GLM (Super Z CLI) acting as senior Android engineer
+- **Feature:** owner-ordered "zero-bug" pass. Phase A = read-only audit of
+  every file at `cb69838` (v1.9.0) across 13 dimensions, delivered as a
+  numbered report (P0×0 / P1×1 / P2×4 / P3×16 + a UI-polish list); owner
+  approved F1-F5, F7-F11, F13-F22 and U1-U4; F6 (banner-honesty flag race,
+  cosmetic + self-correcting) and F12 (dependency bumps — webkit 1.12.1 is
+  deliberately pinned, Phase 8 G4) were DEFERRED by the owner. Phase B =
+  one commit per finding, CI per push. applicationId, keystore/Actions
+  secrets, main-frame allow-list, SAVED-DATA-STAYS-UNTIL-CLEARED,
+  versionCode=run-number and the hotfix-1.6.1 protections all untouched
+  (re-verified during the audit, not assumed).
+- **Audit evidence:** `./gradlew testDebugUnitTest` 98/98 green;
+  `./gradlew lintRelease` 0 errors / 7 warnings (all became findings);
+  `./gradlew assembleRelease` green + apksigner verify + R8 mapping/dex
+  confirmed both JS bridges and all 4 @JavascriptInterface method names
+  survive minification; CI run #55 green at cb69838.
+- **What changed (one commit per finding, all on top of cb69838):**
+  - F2 (793191f): G2 TTL revalidation could STORE a Cloudflare-challenge-
+    marked 200 (`cf-mitigated`/`cf-chl-*` headers) over a good entry. New
+    pure rule `Policy.revalidateStoreAllowed` (200 && !challenge && storable)
+    used by `revalidateEntry`; Phase9PolicyTest created.
+  - F3 (c54ca7c): main-frame `ERROR_UNKNOWN` while ONLINE with an
+    already-loaded page is usually a Chromium navigation abort — the live
+    chart was swapped for the error screen. New pure rule
+    `Policy.shouldShowErrorPage(code, online, pageLoaded, alreadyShowing)`;
+    airplane-mode + real error codes behave exactly as before (pinned).
+  - F1 (ab57582): chip settle race — a show during the 220 ms hide fade left
+    a stale GONE end action armed (pill vanished instead of settling to
+    "Saved data"). Fixed with a chip generation counter + cancel +
+    interrupted-fade re-fade-in.
+  - F5 (c3d40dd): session-cookie watcher bumped the cache generation for ANY
+    cookie loss (one expired analytics cookie abandoned the namespace).
+    Now TWO consecutive cookie-less luxalgo page starts confirm the loss
+    (`Policy.cookieLossConfirmed` + persisted strike count; page starts with
+    cookies reset it). Logout navigation bump unchanged.
+  - F22 (bd3e401): all five `!!` sites PROVEN safe then replaced with
+    locals (MainActivity cold-start restore; Tier2Cache url/method×2/
+    relaxed) — zero behavior change; invariant pins added (lower-case "get"
+    skipReason, upper-case DATA: prefix, 81-char blob name cap).
+  - F4 (35fb06d): signing fail-fast guard now matches only
+    assembleRelease/packageRelease/bundleRelease — lintRelease and
+    testReleaseUnitTest no longer demand signing secrets (proven locally).
+  - F9 (b1c2929): document-start JS injection feature-gated via
+    WebViewFeature.isFeatureSupported (lint RequiresFeature); onPageFinished
+    fallback unchanged.
+  - F10 (1a2d8ee): `res/xml/data_extraction_rules.xml` — cloud-backup AND
+    device-transfer exclude every domain (cookies/saved data never leave the
+    device on API 31+); allowBackup=false kept for API < 31.
+  - F7 (de12fc9): deprecated `setDatabaseEnabled` removed (no-op on current
+    WebView; DOM storage + IndexedDB cover the site).
+  - F8 (20ddf14): `optString("content-type", null)` platform-type warning
+    fixed with a has() guard (identical behavior).
+  - F11 (843b4b8): progress-track color now read from the lux_progress_bg
+    resource (single source of truth; UnusedResources cleared).
+  - F13 (c19d347): diagnostics dialog title moved to strings.xml.
+  - F17 (70813d8): onDestroy removes the WebView from the tree BEFORE
+    destroy() (docs-mandated order).
+  - F18 (17b4f82): `MIXED_CONTENT_NEVER_ALLOW` in the https-only shell;
+    Phase9PolicyTest pins the chart/login/Google/Apple OAuth allow-list
+    hosts per the owner condition (flows keep loading in-app).
+  - F21 (6e616f3): error-page back accepts https-only history entries
+    (`Policy.isRealPageUrl` + tests); cleartext entries could never reload.
+  - F14 (3768c9e): request-log honesty — local exceptions log `SKIP:error`
+    (not the lying "NETWORK"); the three swallowed listener failures are now
+    COUNTED (`listenerErrors` surfaced in diagnostics summary). OOM-class
+    throwables stay behind the outer Throwable guard.
+  - F16 (8a52aa6): shell shadow-fetch throttle map capped at 64 keys,
+    oldest-inserted evicted (was unbounded within a run).
+  - F15 (34d2c2a): POST_NOTIFICATIONS declared + requested ONCE per process
+    on API 33+, deliberately AFTER the DownloadManager enqueue succeeded —
+    denial can never block/delay/fail a download (owner condition, true by
+    construction; result needs no handling).
+  - F19 (636b21e): workflow `paths-ignore: ['**.md']` — log-only pushes no
+    longer burn signed builds (dispatch unaffected; versionCode monotonic).
+  - F20 (8934930): CI now runs `./gradlew lintRelease` after unit tests
+    (possible only thanks to F4); warnings non-fatal while the 4 deferred
+    GradleDependency warnings exist.
+  - version (93ab178): APP_VERSION_NAME -> 1.9.1 with the Phase6PolicyTest
+    assert in the SAME commit (single source of truth).
+  - U1 (8a2b5a6): offline banner slide+fade in/out (~200 ms, generation-
+    guarded, overlay-only, reduced-motion instant).
+  - U2 (6d42e05): error-page card fade+scale entrance (240 ms), reduced-
+    motion CSS extended.
+  - U3 (089fafe): splash handoff gains a 0.98→1.0 scale on the 220 ms fade.
+  - U4 (e0f057f): load bar DecelerateInterpolator + 180→120 ms exit fade.
+- **Verification after all commits:** `./gradlew testDebugUnitTest` =
+  120/120 green (98 previous + 22 new Phase9PolicyTest cases);
+  `./gradlew lintRelease` = 0 errors, exactly 4 warnings (all
+  GradleDependency = deferred F12, accepted); `./gradlew assembleRelease`
+  green with a throwaway dev keystore OUTSIDE the repo (never committed);
+  apksigner verify OK; versionName 1.9.1 in the APK; both bridges
+  un-renamed in mapping.txt; save/saveError/retry/clearSavedData present
+  in the release dex; dataExtractionRules packaged and referenced.
+- **CI runs:** to be recorded right after push (this entry was written
+  offline; the run numbers for the 25 commits + the green release run will
+  be appended in a follow-up docs-only commit, which paths-ignore keeps
+  build-free).
+- **Deferred (owner-approved):** F6 banner-honesty flag race (cosmetic,
+  self-correcting; one-refresh-cycle wording glitch possible); F12 the four
+  dependency bumps (core-ktx 1.19.1, activity-ktx 1.13.0, splashscreen
+  1.2.0, webkit 1.17.1 — revisit in a dedicated maintenance phase). Also
+  re-affirmed from the audit: OOM failures do not feed the 3-strike breaker
+  (outer Throwable guard prevents crashes; breaker semantics unchanged on
+  purpose) and B2 (page-level POST/XHR capture) stays evidence-gated — the
+  chart-cache report is the arbiter (no chart report has been provided yet).
+- **Pending items for the next agent:** (1) B2 still needs a "Copy chart
+  report" paste showing chart-like POST rows with SKIP:non-GET before any
+  page-side capture work; (2) F12 dependency bumps in a quiet maintenance
+  session (webkit bump must re-verify document-start + feature gate);
+  (3) consider persisting the POST_NOTIFICATIONS "asked" flag if users
+  report repeat prompts (per-process today — intentional, denial is
+  harmless); (4) real-device pass of the owner's device-test list
+  (airplane mode, timeframe switching, cold start, logout/login, rotation,
+  back key, downloads, OAuth flows).
+- **Notes for the next agent:** every pure-logic fix carries a
+  Phase9PolicyTest case — keep Policy.kt Android-free; the chip and banner
+  animations both use generation-guarded end actions (F1/U1 pattern) —
+  reuse it for any future overlay motion; the signing guard (F4) means
+  lintRelease/testReleaseUnitTest run WITHOUT secrets locally, so verify
+  lint before pushing; markdown-only pushes no longer start CI (F19), so
+  log-only commits do not produce run numbers.
+
 ## Phase 8 — 2026-10-15 — BUG A/BUG B device fixes + code-review gaps G1-G9 + UI polish (versionName 1.9.0)
 
 - **Agent/Tool:** GLM (Super Z CLI) acting as senior Android engineer

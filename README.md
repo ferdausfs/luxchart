@@ -107,7 +107,12 @@ navigation, on session-cookie loss and by "Clear saved data". Old-generation
 entries become unreachable (IGNORED — never auto-deleted) so a new login
 never reads the previous login's data. Single-user trade-off: within one
 login the cache is intentionally shared across pages of the app
-(app-private storage, device-owner only).
+(app-private storage, device-owner only). Since Phase 9 (F5) the
+session-cookie-loss trigger needs cookie absence on TWO consecutive
+luxalgo page starts (`Policy.cookieLossConfirmed`), so one short-lived
+analytics cookie expiring can no longer abandon the saved-data namespace
+while you are still logged in; any page start with cookies resets the
+streak, and real logout/revocation always produces consecutive absences.
 
 **JS bridge hardening (G4):** `LuxBridge` (error page) acts only while the
 error page is showing, and Clear-saved-data asks for a native confirmation
@@ -123,6 +128,49 @@ document start (`androidx.webkit` 1.12.1, pinned) for luxalgo origins only.
 the BUG B evidence; POST chart requests show `SKIP:non-GET`, the evidence
 for the B2 decision). Paste it to the developer when reporting chart
 issues.
+
+**Phase 9 (v1.9.1) — behavior changes worth knowing:**
+- **Background revalidation refuses challenge-marked 200s (F2):** a 200
+  carrying Cloudflare challenge markers (`cf-mitigated: challenge`,
+  `cf-chl-*`) is never stored over a good entry by the 7-day TTL path —
+  the immediate-fetch path already had this guard; the revalidation path
+  now shares the pure rule (`Policy.revalidateStoreAllowed`).
+- **A live page is no longer swapped for the error screen on
+  `ERROR_UNKNOWN` while online (F3):** Chromium reports navigation aborts
+  (external/download handoff, canceled loads) as `ERROR_UNKNOWN` on the
+  main frame; when the device is online, a page is loaded and no error
+  page is showing, the running chart stays on screen (`Policy
+  .shouldShowErrorPage`). Every real disconnect and any error while
+  OFFLINE still shows the error page exactly as before (airplane mode
+  unchanged).
+- **Error-page back targets are https-only (F21):** back from the error
+  page goes to a real page only when the history entry is https (`Policy
+  .isRealPageUrl`) — a cleartext entry could never reload anyway.
+- **Honest mixed-content mode (F18):** the WebView now uses
+  `MIXED_CONTENT_NEVER_ALLOW` (the manifest already forbids cleartext);
+  chart/login/Google/Apple OAuth flows are all-https and unaffected
+  (allow-list pinned by tests).
+- **Notification permission on Android 13+ (F15):** after the FIRST
+  successful DownloadManager enqueue the app asks once for
+  `POST_NOTIFICATIONS` so download progress/completion notifications can
+  appear. A denial NEVER blocks, delays or fails a download — it only
+  stays silent.
+- **Backup/D2D policy pinned for Android 12+ (F10):**
+  `dataExtractionRules` now excludes every domain on cloud-backup and
+  device-transfer — cookies and saved data never leave the device
+  (`allowBackup=false` remains for API < 31).
+- **Motion polish (U1–U4):** the offline banner slides/fades in and out
+  (~200 ms), the error-page card fades/scales in on load, the splash
+  handoff adds a subtle 0.98→1.0 scale, and the load bar eases with a
+  standard decelerate curve and a crisper 120 ms exit — all reduced-motion
+  aware, all layout-shift-free, touches always pass through to the charts.
+- **Diagnostics honesty (F14/F16):** a local exception in the interceptor
+  is logged as `SKIP:error` (no longer masquerading as `NETWORK`),
+  swallowed listener failures are counted (`listener errors` in the
+  summary), and the shell shadow-fetch throttle map is capped (64 keys).
+- **CI:** `lintRelease` now runs on every build (warnings non-fatal while
+  the 4 pinned dependency-bump warnings exist), and markdown-only pushes
+  (`**.md`) no longer trigger a signed build (manual dispatch unaffected).
 
 **SAVED DATA STAYS UNTIL I CLEAR IT.** Nothing is deleted automatically —
 the old LRU eviction is gone. When saved data reaches the **4 GB** cap, NEW
@@ -219,15 +267,17 @@ Note: `gradle.properties` sets `-Xmx3g`; on small devices override it in
 `~/.gradle/gradle.properties`.
 
 ## CI (GitHub Actions)
-`.github/workflows/release.yml` runs on push to `main` and on manual dispatch:
+`.github/workflows/release.yml` runs on push to `main` (markdown-only
+pushes are skipped via `paths-ignore`) and on manual dispatch:
 1. checkout -> JDK 17 -> Gradle caching
 2. verify the 4 Actions secrets exist (KEYSTORE_BASE64, KEYSTORE_PASSWORD, KEY_ALIAS, KEY_PASSWORD) — hard fail if missing
 3. decode KEYSTORE_BASE64 to a temp file
 4. `./gradlew testDebugUnitTest` — JVM unit tests for the pure logic (must pass before the release build)
-5. `./gradlew assembleRelease` (versionCode = run number)
-6. `apksigner verify --verbose`
-7. upload artifact `LuxChart-release-apk-<run_number>` (90-day retention)
-8. delete temp keystore
+5. `./gradlew lintRelease` — full lint (since Phase 9/F20; warnings are non-fatal, errors fail the run; needs no signing since F4)
+6. `./gradlew assembleRelease` (versionCode = run number)
+7. `apksigner verify --verbose`
+8. upload artifact `LuxChart-release-apk-<run_number>` (90-day retention)
+9. delete temp keystore
 
 Secret values are never printed. The keystore is never committed.
 
