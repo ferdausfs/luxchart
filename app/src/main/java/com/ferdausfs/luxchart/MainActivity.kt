@@ -1408,19 +1408,67 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * Phase 9 U1: banner motion generation — the slide end actions are
+     * guarded exactly like the chip (F1) so rapid online/offline flips can
+     * never fight over the banner state.
+     */
+    private var bannerGeneration = 0
+
     private fun updateOfflineBanner() {
-        if (offlineBanner == null) return
+        val banner = offlineBanner ?: return
+        bannerGeneration++
+        val gen = bannerGeneration
         if (isOnline) {
-            offlineBanner?.visibility = View.GONE
+            if (banner.visibility != View.VISIBLE) return
+            banner.animate().cancel()
+            if (reducedMotion) {
+                banner.visibility = View.GONE
+                banner.translationY = 0f
+                banner.alpha = 1f
+            } else {
+                // U1: slide UP + fade out (~200 ms) — overlay-only, so the
+                // WebView and the charts never shift by a single pixel.
+                val slide = (banner.height.takeIf { it > 0 } ?: dp(28)).toFloat()
+                banner.animate()
+                    .translationYBy(-slide)
+                    .alpha(0f)
+                    .setDuration(200)
+                    .withEndAction {
+                        if (gen == bannerGeneration) {
+                            banner.visibility = View.GONE
+                            banner.translationY = 0f
+                            banner.alpha = 1f
+                        }
+                    }
+                    .start()
+            }
         } else {
             // Phase 6 item 4 (banner honesty): "showing saved data" ONLY while
             // a saved page/resources are actually being served; otherwise the
             // banner says plainly that nothing is saved for this page yet.
-            offlineBanner?.text = getString(
+            banner.text = getString(
                 if (mainFrameServedFromShell) R.string.offline_banner
                 else R.string.offline_banner_nothing_saved
             )
-            offlineBanner?.visibility = View.VISIBLE
+            if (banner.visibility == View.VISIBLE) return
+            banner.visibility = View.VISIBLE
+            if (reducedMotion) return
+            // U1: slide DOWN + fade in (~200 ms) from just above its row.
+            banner.animate().cancel()
+            banner.translationY = -((banner.height.takeIf { it > 0 } ?: dp(28)).toFloat())
+            banner.alpha = 0f
+            banner.animate()
+                .translationY(0f)
+                .alpha(1f)
+                .setDuration(200)
+                .withEndAction {
+                    if (gen == bannerGeneration) {
+                        banner.translationY = 0f
+                        banner.alpha = 1f
+                    }
+                }
+                .start()
         }
     }
 
