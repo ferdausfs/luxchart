@@ -9,6 +9,10 @@
     <uses-permission
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28" />
+    <!-- Phase 9 F15: download progress/completion notifications are silent
+         on Android 13+ unless this is requested. The app asks once after a
+         successful enqueue; a denial NEVER blocks or fails a download. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:allowBackup="false"

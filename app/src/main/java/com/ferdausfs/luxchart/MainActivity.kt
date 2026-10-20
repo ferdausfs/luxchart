@@ -298,6 +298,38 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+    /**
+     * Phase 9 F15: POST_NOTIFICATIONS (API 33+) is asked ONCE per process,
+     * AFTER the DownloadManager enqueue has already succeeded — so the
+     * download can never be blocked, delayed or failed by the permission in
+     * any state. Grant => DownloadManager shows progress/completion
+     * notifications; deny => the download simply runs silently. The result
+     * needs no handling by construction.
+     */
+    private val notificationPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { _ -> /* download already enqueued */ }
+
+    /** Phase 9 F15: asked-once guard (per process). */
+    private var notificationsAskedThisProcess = false
+
+    /** Phase 9 F15: request POST_NOTIFICATIONS once, API 33+, never blocking. */
+    private fun maybeRequestPostNotifications() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        if (notificationsAskedThisProcess) return
+        val granted = ContextCompat.checkSelfPermission(
+            this, android.Manifest.permission.POST_NOTIFICATIONS
+        ) == PackageManager.PERMISSION_GRANTED
+        if (granted) return
+        notificationsAskedThisProcess = true
+        try {
+            notificationPermissionLauncher.launch(
+                android.Manifest.permission.POST_NOTIFICATIONS
+            )
+        } catch (e: Exception) {
+            // Launcher unavailable — the download is already enqueued; nothing to do.
+        }
+    }
+
     // ---- Auto-retry when the network comes back (feature 4) -----------------
 
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
@@ -1554,6 +1586,9 @@ class MainActivity : ComponentActivity() {
             dm.enqueue(request)
             Toast.makeText(this, getString(R.string.download_started, name), Toast.LENGTH_SHORT)
                 .show()
+            // Phase 9 F15: ask for POST_NOTIFICATIONS only AFTER the enqueue
+            // succeeded — denial can never block or fail a download.
+            maybeRequestPostNotifications()
         } catch (e: Exception) {
             Toast.makeText(this, R.string.download_failed, Toast.LENGTH_SHORT).show()
             openExternal(data.url)
