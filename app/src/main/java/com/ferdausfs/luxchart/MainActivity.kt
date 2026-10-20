@@ -565,7 +565,12 @@ class MainActivity : ComponentActivity() {
             )
             max = 100
             progressTintList = ColorStateList.valueOf(ACCENT_COLOR)
-            progressBackgroundTintList = ColorStateList.valueOf(PROGRESS_BG_COLOR)
+            // Phase 9 F11: the track color now comes from the color RESOURCE
+            // (lux_progress_bg) instead of a duplicated hardcoded hex — single
+            // source of truth, and the resource is no longer "unused" (lint).
+            progressBackgroundTintList = ColorStateList.valueOf(
+                ContextCompat.getColor(this@MainActivity, R.color.lux_progress_bg)
+            )
             visibility = View.GONE
         }
         rootLayout.addView(progressBar)
@@ -1816,7 +1821,9 @@ class MainActivity : ComponentActivity() {
 
         private val BG_COLOR = 0xFF0A0E14.toInt()
         private val ACCENT_COLOR = 0xFF2DD4BF.toInt()
-        private val PROGRESS_BG_COLOR = 0xFF1E293B.toInt()
+        // Phase 9 F11: PROGRESS_BG_COLOR removed — the track color lives ONLY
+        // in the color resource lux_progress_bg (same hex #1E293B), read via
+        // ContextCompat in buildLayout.
         private val BANNER_BG_COLOR = 0xFF334155.toInt()
         private val BANNER_TEXT_COLOR = 0xFFFCD34D.toInt()
         private val CHIP_BG = 0xCC0F172A.toInt()
