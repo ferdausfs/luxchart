@@ -194,4 +194,36 @@ class Phase9PolicyTest {
         // a short name passes through unchanged
         assertEquals("report.csv", Policy.sanitizeBlobFileName("report.csv"))
     }
+
+    // ---- F18: allow-list pin for the flows that must keep loading in-app -----
+    // MIXED_CONTENT_NEVER_ALLOW only blocks http subresources on https pages.
+    // The chart, login and Google/Apple OAuth hosts are all-https; this pin
+    // makes sure they stay on the navigation allow-list so those flows keep
+    // loading INSIDE the WebView (a removed host would hand off to the
+    // external browser instead).
+
+    @Test
+    fun `chart and login hosts stay on the allow-list (F18)`() {
+        assertTrue(Policy.isAllowed("vela.luxalgo.com"))
+        assertTrue(Policy.isAllowed("www.luxalgo.com"))
+        assertTrue(Policy.isAllowed("api.luxalgo.com"))
+    }
+
+    @Test
+    fun `google and apple oauth hosts stay on the allow-list (F18)`() {
+        assertTrue(Policy.isAllowed("accounts.google.com"))
+        assertTrue(Policy.isAllowed("accounts.youtube.com")) // Google OAuth hop
+        assertTrue(Policy.isAllowed("appleid.apple.com"))
+    }
+
+    @Test
+    fun `other sign-in and payment hosts stay on the allow-list (F18)`() {
+        assertTrue(Policy.isAllowed("facebook.com"))
+        assertTrue(Policy.isAllowed("discord.com"))
+        assertTrue(Policy.isAllowed("login.microsoftonline.com"))
+        assertTrue(Policy.isAllowed("checkout.stripe.com"))
+        assertTrue(Policy.isAllowed("js.stripe.com"))
+        assertTrue(Policy.isAllowed("paypal.com"))
+        assertTrue(Policy.isAllowed("challenges.cloudflare.com"))
+    }
 }

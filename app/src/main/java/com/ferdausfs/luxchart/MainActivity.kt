@@ -825,7 +825,13 @@ class MainActivity : ComponentActivity() {
             // the Tier-2 interceptor (it must never read WebSettings itself).
             requestUserAgent = userAgentString
             textZoom = 100
-            mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+            // Phase 9 F18: the honest setting for an https-only shell. The
+            // old COMPATIBILITY mode would have let an http subresource load
+            // on an https page; usesCleartextTraffic=false blocks the network
+            // anyway, but now the WebView setting agrees with the policy.
+            // Chart, login and the Google/Apple OAuth flows are all-https and
+            // unaffected (allow-list pinned by Phase9PolicyTest).
+            mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
             // Feature 6: WebView must not steal pinch/pan from the chart canvas.
             setSupportZoom(false)
             builtInZoomControls = false
