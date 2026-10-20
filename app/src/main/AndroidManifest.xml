@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- Offline detection + auto-retry of the error page -->
@@ -12,6 +13,8 @@
     <application
         android:allowBackup="false"
         android:fullBackupContent="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        tools:targetApi="31"
         android:hardwareAccelerated="true"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
@@ -23,6 +26,9 @@
              single response up to 100 MB in memory before storing it — the
              larger heap makes that spec-mandated limit safe on devices that
              would otherwise throw OOM mid-buffer. -->
+        <!-- allowBackup=false + fullBackupContent=false (API < 31) and
+             dataExtractionRules (API 31+, Phase 9 F10) both pin the same
+             guarantee: cookies and saved data never leave the device. -->
 
         <activity
             android:name=".MainActivity"

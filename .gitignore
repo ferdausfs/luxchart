@@ -22,3 +22,6 @@ keystore.properties
 # OS junk
 .DS_Store
 Thumbs.db
+
+# Kotlin compiler session junk (Phase 9 hygiene)
+.kotlin/
