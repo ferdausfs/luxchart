@@ -171,7 +171,17 @@ class MainActivity : ComponentActivity() {
      * Phase 8 G3: session-cookie watcher for luxalgo hosts. Remembers when
      * session cookies exist; when they disappear (logout, expiry, remote
      * revoke) the cache generation is bumped so the next login starts from
-     * a clean namespace. Best-effort, main thread only.
+     * a clean namespace.
+     *
+     * Phase 9 F5: the bump is CONFIRMED — it now needs cookie absence on TWO
+     * consecutive luxalgo page starts (Policy.cookieLossConfirmed), so a
+     * single short-lived analytics cookie expiring mid-session can no longer
+     * abandon the whole saved-data namespace while the user is still logged
+     * in. Any page start WITH cookies resets the streak. Real logout /
+     * revocation always produces consecutive absences, and every luxalgo
+     * page start (login page included) counts as a strike, so the bump still
+     * happens well before any new login's data could be written. Best-effort,
+     * main thread only.
      */
     private fun monitorSessionCookies(url: String) {
         runCatching {
@@ -182,10 +192,24 @@ class MainActivity : ComponentActivity() {
             when {
                 hasCookies && !had ->
                     statePrefs.edit().putBoolean(KEY_HAD_SESSION_COOKIES, true).apply()
+                hasCookies && had ->
+                    // Phase 9 F5: a page start WITH cookies resets the streak.
+                    if (statePrefs.getInt(KEY_COOKIE_LOSS_STRIKES, 0) != 0) {
+                        statePrefs.edit().putInt(KEY_COOKIE_LOSS_STRIKES, 0).apply()
+                    }
                 !hasCookies && had -> {
-                    statePrefs.edit().putBoolean(KEY_HAD_SESSION_COOKIES, false).apply()
-                    bumpCacheGeneration("session cookies lost")
+                    val strikes = statePrefs.getInt(KEY_COOKIE_LOSS_STRIKES, 0) + 1
+                    if (Policy.cookieLossConfirmed(strikes)) {
+                        statePrefs.edit()
+                            .putBoolean(KEY_HAD_SESSION_COOKIES, false)
+                            .putInt(KEY_COOKIE_LOSS_STRIKES, 0)
+                            .apply()
+                        bumpCacheGeneration("session cookies lost")
+                    } else {
+                        statePrefs.edit().putInt(KEY_COOKIE_LOSS_STRIKES, strikes).apply()
+                    }
                 }
+                // !hasCookies && !had: no session ever seen — nothing to do.
             }
         }
     }
@@ -1735,6 +1759,8 @@ class MainActivity : ComponentActivity() {
         /** Phase 8 G3: per-login cache generation + session-cookie snapshot. */
         private const val KEY_CACHE_GEN = "cache_generation"
         private const val KEY_HAD_SESSION_COOKIES = "had_session_cookies"
+        /** Phase 9 F5: consecutive luxalgo page starts without session cookies. */
+        private const val KEY_COOKIE_LOSS_STRIKES = "cookie_loss_strikes"
         /** Page-visible duration after which a launch counts as successful. */
         private const val CRASH_RESET_AFTER_VISIBLE_MS = 10_000L
 

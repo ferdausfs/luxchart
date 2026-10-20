@@ -125,4 +125,31 @@ class Phase9PolicyTest {
         // while the error page is up still refreshes it (message update).
         assertTrue(Policy.shouldShowErrorPage(Policy.WEBVIEW_ERROR_UNKNOWN, true, true, true))
     }
+
+    // ---- F5: cookieLossConfirmed ------------------------------------------------
+
+    @Test
+    fun `one missed page start is NOT a confirmed session loss`() {
+        // Owner condition: logout/login generation-bump behaviour stays
+        // conservative — a single cookie-less page start (one short-lived
+        // analytics cookie expiring) must NOT abandon the saved-data
+        // namespace while the user is still logged in.
+        assertFalse(Policy.cookieLossConfirmed(0))
+        assertFalse(Policy.cookieLossConfirmed(1))
+    }
+
+    @Test
+    fun `two consecutive misses confirm the session loss`() {
+        // Real logout / remote revocation always produces consecutive
+        // absences — two strikes bump the generation as before.
+        assertTrue(Policy.cookieLossConfirmed(2))
+        assertTrue(Policy.cookieLossConfirmed(3))
+        assertTrue(Policy.cookieLossConfirmed(10))
+    }
+
+    @Test
+    fun `required strike count is exactly two`() {
+        // Pin the constant so the confirmation window cannot drift silently.
+        org.junit.Assert.assertEquals(2, Policy.COOKIE_LOSS_STRIKES_REQUIRED)
+    }
 }

@@ -611,6 +611,25 @@ object Policy {
     // ---- Cache generation (Phase 8 G3, pure, tested) ---------------------------
 
     /**
+     * Phase 9 F5 — session-cookie loss needs TWO consecutive luxalgo page
+     * starts WITHOUT cookies before the cache generation is bumped. A
+     * short-lived analytics/marketing cookie expiring mid-session used to
+     * abandon the whole saved-data namespace on the very next page start
+     * while the user was still logged in. Real logout / remote revocation
+     * always produces consecutive absences; any page start WITH cookies
+     * resets the strike count.
+     */
+    const val COOKIE_LOSS_STRIKES_REQUIRED = 2
+
+    /**
+     * TRUE => the session-cookie loss is confirmed (>= [COOKIE_LOSS_STRIKES_REQUIRED]
+     * consecutive luxalgo page starts without any cookie) and the caller must
+     * bump the per-login cache generation. Pure + tested (Phase9PolicyTest).
+     */
+    fun cookieLossConfirmed(consecutiveMisses: Int): Boolean =
+        consecutiveMisses >= COOKIE_LOSS_STRIKES_REQUIRED
+
+    /**
      * PATH segments that mean LOG-OUT. A main-frame navigation to any of
      * these bumps the per-login cache generation (the session is ending, so
      * saved data must not leak into the next login). Distinct from the
