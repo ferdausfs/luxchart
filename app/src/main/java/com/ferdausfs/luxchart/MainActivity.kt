@@ -31,6 +31,7 @@ import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.view.animation.DecelerateInterpolator
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
 import android.webkit.RenderProcessGoneDetail
@@ -1177,7 +1178,9 @@ class MainActivity : ComponentActivity() {
                 if (reducedMotion) {
                     progressBar.visibility = View.GONE
                 } else {
-                    progressBar.animate().alpha(0f).setDuration(180)
+                    // Phase 9 U4: exit fade tightened 180 -> 120 ms so the bar
+                    // disappears crisply when a load completes.
+                    progressBar.animate().alpha(0f).setDuration(120)
                         .withEndAction {
                             progressBar.visibility = View.GONE
                             progressBar.alpha = 1f
@@ -1205,6 +1208,10 @@ class MainActivity : ComponentActivity() {
         }
         ValueAnimator.ofInt(from, target).apply {
             duration = 150
+            // Phase 9 U4: DecelerateInterpolator — the bar rushes to the new
+            // progress and settles smoothly (standard easing, still 150 ms and
+            // never blocking).
+            interpolator = DecelerateInterpolator()
             addUpdateListener { animator ->
                 progressBar.progress = animator.animatedValue as Int
             }
