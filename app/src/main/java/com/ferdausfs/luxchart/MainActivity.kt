@@ -1457,7 +1457,9 @@ class MainActivity : ComponentActivity() {
             ))
         }
         AlertDialog.Builder(this)
-            .setTitle("Cache diagnostics + request log")
+            // Phase 9 F13: every other user-visible string lives in strings.xml
+            // — the diagnostics dialog title joins them.
+            .setTitle(R.string.diag_dialog_title)
             .setView(container)
             .show()
     }
