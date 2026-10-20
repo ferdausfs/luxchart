@@ -82,11 +82,18 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
 }
 
-// Fail fast (before any task executes) when a release build is requested but
-// the signing secrets are missing — clear message, no silent fallback.
+// Fail fast (before any task executes) when an APK/AAB is requested but the
+// signing secrets are missing — clear message, no silent fallback.
+// Phase 9 F4: the guard now matches ONLY the tasks that actually sign
+// (assembleRelease / packageRelease / bundleRelease). The old
+// "name contains Release" rule also blocked tasks that never sign anything —
+// lintRelease, testReleaseUnitTest, bundle — locally and in CI. CI's
+// assembleRelease path still fails fast exactly as before.
 gradle.taskGraph.whenReady {
-    val requestsRelease = allTasks.any { it.name.contains("Release", ignoreCase = true) }
-    if (requestsRelease && !haveReleaseSigning) {
+    val requestsSignedArtifact = allTasks.any {
+        it.name == "assembleRelease" || it.name == "packageRelease" || it.name == "bundleRelease"
+    }
+    if (requestsSignedArtifact && !haveReleaseSigning) {
         throw GradleException(
             "Release build requested but signing environment is missing. " +
                 "Set KEYSTORE_FILE, KEYSTORE_PASSWORD, KEY_ALIAS and KEY_PASSWORD " +
