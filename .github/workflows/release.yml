@@ -67,6 +67,13 @@ jobs:
       - name: Run JVM unit tests (pure logic, no device)
         run: ./gradlew testDebugUnitTest --stacktrace
 
+      # Phase 9 F20: the 7 audit warnings surfaced only locally — CI ran just
+      # lintVitalRelease (fatal-only) inside assembleRelease. Full lint now
+      # runs explicitly; warnings stay non-fatal (default) while the build is
+      # green, errors fail the run. Needs no signing since F4.
+      - name: Run lint (release variant)
+        run: ./gradlew lintRelease --stacktrace
+
       - name: Build signed release APK
         env:
           KEYSTORE_FILE: ${{ runner.temp }}/luxchart-release.jks
