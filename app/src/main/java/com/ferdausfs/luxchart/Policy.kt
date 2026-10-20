@@ -788,6 +788,37 @@ object Policy {
         }
     }
 
+    // ---- Error-page decision (Phase 9 F3, pure, tested) ------------------------
+
+    /**
+     * WebViewClient.ERROR_UNKNOWN — Chromium's catch-all error code (-1).
+     * Duplicated as a constant because [Policy] must stay free of Android
+     * imports (JVM-tested).
+     */
+    const val WEBVIEW_ERROR_UNKNOWN = -1
+
+    /**
+     * Phase 9 F3 — TRUE => a main-frame load error should replace the current
+     * page with the offline/error screen.
+     *
+     * Chromium surfaces navigation ABORTS (external-handoff, download-handoff
+     * and canceled loads) as ERROR_UNKNOWN on the main frame even though the
+     * page itself is fine and the device is online — swapping a live chart
+     * for the offline screen in that case is wrong. Rule: skip the error page
+     * ONLY when the code is ERROR_UNKNOWN AND the device is online AND a page
+     * has already loaded AND no error page is currently showing. Every real
+     * disconnect (ERROR_CONNECT, ERROR_TIMEOUT, ERROR_HOST_LOOKUP, …) and any
+     * error while OFFLINE still shows the page exactly as before — the
+     * airplane-mode flow is unchanged by construction (pinned by test).
+     */
+    fun shouldShowErrorPage(
+        errorCode: Int,
+        online: Boolean,
+        pageLoaded: Boolean,
+        alreadyShowing: Boolean
+    ): Boolean =
+        !(errorCode == WEBVIEW_ERROR_UNKNOWN && online && pageLoaded && !alreadyShowing)
+
     // ---- Crash-loop kill switch (hotfix 1.6.1 item 5, pure, tested) ----------
 
     /**

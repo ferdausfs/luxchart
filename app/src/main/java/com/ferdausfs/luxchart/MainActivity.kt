@@ -888,7 +888,29 @@ class MainActivity : ComponentActivity() {
             error: WebResourceError
         ) {
             if (request.isForMainFrame) {
-                showError(request.url.toString(), error.description?.toString())
+                // Phase 9 F3: a main-frame ERROR_UNKNOWN while ONLINE with an
+                // already-loaded page is usually a Chromium navigation ABORT
+                // (external/download handoff, canceled load) — the chart on
+                // screen is alive and must NOT be swapped for the error page.
+                // Real disconnects (ERROR_CONNECT/TIMEOUT/…) and any error
+                // while offline still show the page exactly as before; the
+                // decision is the pure, unit-tested Policy rule.
+                val code = try {
+                    error.errorCode
+                } catch (e: Exception) {
+                    Policy.WEBVIEW_ERROR_UNKNOWN
+                }
+                val show = Policy.shouldShowErrorPage(
+                    code, isOnline, contentReady, errorShowing
+                )
+                if (show) {
+                    showError(request.url.toString(), error.description?.toString())
+                } else {
+                    android.util.Log.i(
+                        "LuxChart",
+                        "main-frame ERROR_UNKNOWN online with a live page — keeping it (F3)"
+                    )
+                }
             }
         }
 

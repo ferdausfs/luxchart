@@ -83,4 +83,46 @@ class Phase9PolicyTest {
             )
         )
     }
+
+    // ---- F3: shouldShowErrorPage ------------------------------------------------
+
+    @Test
+    fun `ERROR_UNKNOWN online with a loaded page does not replace the live page`() {
+        // Navigation aborts (external/download handoff, canceled load) surface
+        // as ERROR_UNKNOWN on the main frame while the chart is fine — keep it.
+        assertFalse(Policy.shouldShowErrorPage(Policy.WEBVIEW_ERROR_UNKNOWN, true, true, false))
+    }
+
+    @Test
+    fun `airplane-mode behaviour is unchanged — offline always shows the error page`() {
+        // Owner condition: the offline flow must behave EXACTLY as before.
+        // Any error while offline shows the page, whatever the code/state.
+        assertTrue(Policy.shouldShowErrorPage(Policy.WEBVIEW_ERROR_UNKNOWN, false, true, false))
+        assertTrue(Policy.shouldShowErrorPage(Policy.WEBVIEW_ERROR_UNKNOWN, false, false, false))
+        assertTrue(Policy.shouldShowErrorPage(Policy.WEBVIEW_ERROR_UNKNOWN, false, true, true))
+        assertTrue(Policy.shouldShowErrorPage(-6, false, true, false)) // ERROR_CONNECT offline
+    }
+
+    @Test
+    fun `real error codes always show the error page — online or not`() {
+        // ERROR_CONNECT (-6), ERROR_TIMEOUT (-8), ERROR_HOST_LOOKUP (-1 is NOT
+        // among them — real codes are any value != ERROR_UNKNOWN here).
+        assertTrue(Policy.shouldShowErrorPage(-6, true, true, false))
+        assertTrue(Policy.shouldShowErrorPage(-8, true, true, false))
+        assertTrue(Policy.shouldShowErrorPage(-118, true, true, false)) // CONNECTION_TIMED_OUT
+    }
+
+    @Test
+    fun `first-load unknown error still shows the error page`() {
+        // Nothing loaded yet (contentReady == false): an ERROR_UNKNOWN on the
+        // very first navigation is still the only thing on screen — show it.
+        assertTrue(Policy.shouldShowErrorPage(Policy.WEBVIEW_ERROR_UNKNOWN, true, false, false))
+    }
+
+    @Test
+    fun `error page already showing keeps its refresh behaviour`() {
+        // alreadyShowing == true preserves the old behaviour: a second error
+        // while the error page is up still refreshes it (message update).
+        assertTrue(Policy.shouldShowErrorPage(Policy.WEBVIEW_ERROR_UNKNOWN, true, true, true))
+    }
 }
