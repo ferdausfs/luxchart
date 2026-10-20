@@ -449,7 +449,9 @@ class MainActivity : ComponentActivity() {
             // allow-listed https URLs without sensitive path segments are
             // restored; anything else falls back to START_URL.
             val stored = statePrefs.getString(KEY_LAST_URL, null)
-            if (Policy.restoreAllowed(stored)) currentUrl = stored!!
+            // Phase 9 F22: restoreAllowed(null) == false, so a passing `stored`
+            // is provably non-null — the smart cast replaces the old `stored!!`.
+            if (stored != null && Policy.restoreAllowed(stored)) currentUrl = stored
         }
         if (errorShowing) {
             showErrorPage()

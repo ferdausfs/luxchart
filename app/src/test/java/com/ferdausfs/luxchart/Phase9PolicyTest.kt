@@ -1,6 +1,8 @@
 package com.ferdausfs.luxchart
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -15,7 +17,6 @@ import org.junit.Test
  *  - F21: isRealPageUrl (https-only back-navigation targets)
  *  - F22 backing invariant pins: skipReason lower-case "get", DATA: prefix
  *        case-insensitivity, sanitizeBlobFileName long extensionless name
- *
  * These run in CI before assembleRelease.
  */
 class Phase9PolicyTest {
@@ -151,5 +152,46 @@ class Phase9PolicyTest {
     fun `required strike count is exactly two`() {
         // Pin the constant so the confirmation window cannot drift silently.
         org.junit.Assert.assertEquals(2, Policy.COOKIE_LOSS_STRIKES_REQUIRED)
+    }
+
+    // ---- F22 backing invariant pins ---------------------------------------------
+    // The five former !! sites are proven safe by these invariants; the pins
+    // make the proofs test-visible so a Policy change cannot silently break
+    // them.
+
+    @Test
+    fun `skipReason treats a lower-case get as cacheable (method-null proof)`() {
+        // Tier2Cache.intercept's method elvis relies on: skipReason == null
+        // ⇒ the method was a non-blank GET — in ANY case variant.
+        assertNull(Policy.skipReason("get", "https://vela.luxalgo.com/api/v1/x", emptyMap()))
+        assertNull(Policy.skipReason("GeT", "https://vela.luxalgo.com/api/v1/x", emptyMap()))
+        // …and everything else (incl. null/blank) is rejected with "non-GET".
+        assertEquals("non-GET", Policy.skipReason(null, "https://vela.luxalgo.com/api/v1/x", emptyMap()))
+        assertEquals("non-GET", Policy.skipReason("  ", "https://vela.luxalgo.com/api/v1/x", emptyMap()))
+        assertEquals("non-GET", Policy.skipReason("POST", "https://vela.luxalgo.com/api/v1/x", emptyMap()))
+    }
+
+    @Test
+    fun `dataUrlParts accepts an upper-case DATA prefix`() {
+        val parts = Policy.dataUrlParts("DATA:text/plain;base64,aGVsbG8=")
+        org.junit.Assert.assertNotNull(parts)
+        assertEquals("text/plain", parts!!.mime)
+        assertTrue(parts.isBase64)
+        assertEquals("aGVsbG8=", parts.payload)
+        // lower-case still fine, and garbage still rejected
+        org.junit.Assert.assertNotNull(Policy.dataUrlParts("data:text/plain,hi"))
+        assertNull(Policy.dataUrlParts("https://vela.luxalgo.com/not-data"))
+        assertNull(Policy.dataUrlParts("data:nocomma"))
+    }
+
+    @Test
+    fun `sanitizeBlobFileName caps an 81-char extensionless name at 80`() {
+        val long = "a".repeat(81)
+        val capped = Policy.sanitizeBlobFileName(long)
+        org.junit.Assert.assertNotNull(capped)
+        assertEquals(80, capped!!.length)
+        assertEquals(long.take(80), capped)
+        // a short name passes through unchanged
+        assertEquals("report.csv", Policy.sanitizeBlobFileName("report.csv"))
     }
 }

@@ -346,21 +346,29 @@ class Tier2Cache(
             return null
         }
         try {
-            val host = try { URI(url ?: return null).host } catch (e: Exception) { return null }
+            // Phase 9 F22: this elvis IS the null-proof for every later use of
+            // the request URL — a null/blank/unparseable URL returns here, so
+            // everything below can rely on a non-null value instead of `!!`.
+            val urlNN = url ?: return null
+            val host = try { URI(urlNN).host } catch (e: Exception) { return null }
             if (!Policy.isLuxAlgo(host)) return null // third-party: never touched, never logged
-            val skipReason = Policy.skipReason(method, url, requestHeaders ?: emptyMap())
+            val skipReason = Policy.skipReason(method, urlNN, requestHeaders ?: emptyMap())
             if (skipReason != null) {
                 diagnostics.skipped.incrementAndGet()
-                diagnostics.recordSkipped("$host${pathOf(url!!)}")
-                recordRequest(method, url, 0, null, -1, "SKIP:$skipReason")
+                diagnostics.recordSkipped("$host${pathOf(urlNN)}")
+                recordRequest(method, urlNN, 0, null, -1, "SKIP:$skipReason")
                 return null
             }
+            // Phase 9 F22: skipReason == null proves the method is a non-blank
+            // GET (null/blank/non-GET would have returned "non-GET" above), so
+            // the elvis fallback below is unreachable by construction.
+            val methodNN = method ?: "GET"
             return if (isOnline()) {
                 // Phase 8 G1: a host that answered 3 challenges in a row stops
                 // being intercepted (ONLINE only) for the rest of the run —
                 // the WebView's own stack is the only thing that can pass.
                 if (diagnostics.isHostChallengeBlocked(host)) {
-                    recordRequest(method, url, 0, null, -1, "SKIP:challenge-host")
+                    recordRequest(methodNN, urlNN, 0, null, -1, "SKIP:challenge-host")
                     return null
                 }
                 // Phase 7 item 1 — CACHE-FIRST ONLINE: a stored entry is
@@ -372,8 +380,8 @@ class Tier2Cache(
                 // Phase 8 B1: ONLINE serving stays EXACT-KEY only — the
                 // relaxed key is an OFFLINE safety net (latest saved data for
                 // that symbol+timeframe) and never changes online behaviour.
-                val key = Policy.cacheKey(method!!, url, currentGen())
-                val hit = readFromDisk(method, url)
+                val key = Policy.cacheKey(methodNN, urlNN, currentGen())
+                val hit = readFromDisk(methodNN, urlNN)
                 if (hit != null) {
                     diagnostics.cacheFirstHits.incrementAndGet()
                     // Phase 8 UI: drive the Saved-data/Updating chip.
@@ -381,7 +389,7 @@ class Tier2Cache(
                     val refreshing = apiLike && key != null
                     try { onCacheServed?.invoke(apiLike, refreshing) } catch (e: Exception) { }
                     if (key != null && Policy.isApiLikeType(hit.contentType)) {
-                        scheduleBackgroundRefresh(method, url, key, requestHeaders ?: emptyMap(), userAgent)
+                        scheduleBackgroundRefresh(methodNN, urlNN, key, requestHeaders ?: emptyMap(), userAgent)
                     } else if (
                         key != null &&
                         Policy.staticNeedsRevalidate(
@@ -392,23 +400,25 @@ class Tier2Cache(
                         // Phase 8 G2: a static asset older than the 7-day TTL is
                         // revalidated in the background (conditional GET) —
                         // serving stays instant, nothing is ever deleted.
-                        scheduleBackgroundRevalidate(method, url, key, requestHeaders ?: emptyMap(), userAgent)
+                        scheduleBackgroundRevalidate(methodNN, urlNN, key, requestHeaders ?: emptyMap(), userAgent)
                     }
-                    recordRequest(method, url, hit.status, hit.contentType, hit.byteCount.toLong(), "HIT")
+                    recordRequest(methodNN, urlNN, hit.status, hit.contentType, hit.byteCount.toLong(), "HIT")
                     return hit.response
                 }
-                fetchAndStore(method, url, requestHeaders ?: emptyMap(), userAgent)
+                fetchAndStore(methodNN, urlNN, requestHeaders ?: emptyMap(), userAgent)
             } else {
-                val hit = readFromDisk(method!!, url)
+                val hit = readFromDisk(methodNN, urlNN)
                 // Phase 8 B1 (BUG B): OFFLINE exact-key miss falls back to the
                 // RELAXED key (same symbol+timeframe+path, no time-window
                 // params) so an already-loaded timeframe opens instantly from
                 // saved data instead of failing into the error page.
-                val relaxed = if (hit == null) readRelaxedFromDisk(method, url) else null
-                if (hit != null || relaxed != null) {
-                    val served = hit ?: relaxed!!
+                // Phase 9 F22: `hit ?: relaxed` with the null check moved into
+                // the branch — the old `hit ?: relaxed!!` needed no proof.
+                val relaxed = if (hit == null) readRelaxedFromDisk(methodNN, urlNN) else null
+                val served = hit ?: relaxed
+                if (served != null) {
                     recordRequest(
-                        method, url, served.status, served.contentType,
+                        methodNN, urlNN, served.status, served.contentType,
                         served.byteCount.toLong(), if (hit != null) "HIT" else "HIT-RELAXED"
                     )
                     // Phase 8 UI: offline saved-data serve of chart data.
@@ -419,7 +429,7 @@ class Tier2Cache(
                 } else {
                     // Offline with nothing saved: the WebView fails naturally
                     // into the error page — record WHY (Phase 7 item 10).
-                    recordRequest(method, url, 0, null, -1, "SKIP:no-saved-copy")
+                    recordRequest(methodNN, urlNN, 0, null, -1, "SKIP:no-saved-copy")
                     null
                 }
             }
