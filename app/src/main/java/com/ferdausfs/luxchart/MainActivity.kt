@@ -548,6 +548,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         if (::webView.isInitialized) {
+            // Phase 9 F17: destroy() is documented to require the WebView to
+            // be removed from the view tree first (recreateWebView already
+            // did; the Activity teardown path does it here now too).
+            (webView.parent as? ViewGroup)?.removeView(webView)
             webView.destroy()
         }
         super.onDestroy()
