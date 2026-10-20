@@ -793,7 +793,11 @@ class MainActivity : ComponentActivity() {
         wv.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
-            databaseEnabled = true
+            // Phase 9 F7: WebSettings.setDatabaseEnabled is deprecated (API 35,
+            // WebSQL removal) — the flag has been a no-op on current WebView
+            // for years and the site needs none of it (DOM storage above +
+            // always-on IndexedDB cover everything). Removed for the deprecation
+            // warning; no behaviour change on any WebView a modern device ships.
             useWideViewPort = true
             loadWithOverviewMode = true
             // Tier-1 offline: online = normal HTTP cache, offline = serve
