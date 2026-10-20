@@ -103,10 +103,17 @@ secret values in this file. Secret *names* and file *names* are allowed.
   apksigner verify OK; versionName 1.9.1 in the APK; both bridges
   un-renamed in mapping.txt; save/saveError/retry/clearSavedData present
   in the release dex; dataExtractionRules packaged and referenced.
-- **CI runs:** to be recorded right after push (this entry was written
-  offline; the run numbers for the 25 commits + the green release run will
-  be appended in a follow-up docs-only commit, which paths-ignore keeps
-  build-free).
+- **CI runs (one commit = one push = one gated run, all GREEN):** #56
+  793191f (F2), #57 c54ca7c (F3), #58 ab57582 (F1), #59 c3d40dd (F5),
+  #60 bd3e401 (F22), #61 35fb06d (F4), #62 b1c2929 (F9), #63 1a2d8ee
+  (F10), #64 de12fc9 (F7), #65 20ddf14 (F8), #66 843b4b8 (F11), #67
+  c19d347 (F13), #68 70813d8 (F17), #69 17b4f82 (F18), #70 6e616f3
+  (F21), #71 3768c9e (F14), #72 8a52aa6 (F16), #73 34d2c2a (F15), #74
+  636b21e (F19), #75 8934930 (F20), #76 93ab178 (version 1.9.1), #77
+  8a2b5a6 (U1), #78 6d42e05 (U2), #79 089fafe (U3), #80 e0f057f (U4);
+  the docs commit 8e659d4 was skipped by paths-ignore (markdown-only).
+  Release run: #81 (workflow_dispatch) GREEN at 8e659d4 — tag `v1.9.1`
+  and `LuxChart-v1.9.1.apk` cut from this exact SHA.
 - **Deferred (owner-approved):** F6 banner-honesty flag race (cosmetic,
   self-correcting; one-refresh-cycle wording glitch possible); F12 the four
   dependency bumps (core-ktx 1.19.1, activity-ktx 1.13.0, splashscreen
