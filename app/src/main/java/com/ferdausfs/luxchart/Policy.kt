@@ -335,6 +335,26 @@ object Policy {
     }
 
     /**
+     * Phase 9 F2 — the store decision for the G2 TTL-REVALIDATION 200 path.
+     * The immediate-fetch path ([shouldStoreResponse] callers) is already
+     * preceded by the challenge check, but the background revalidation used
+     * to consult [shouldStoreResponse] ONLY — so a 200 carrying a
+     * Cloudflare-challenge marker (`cf-mitigated: challenge`, `cf-chl-*`,
+     * which [isChallengeResponse] also matches) could be persisted OVER a
+     * good entry and served from saved data later (worst case offline).
+     * Rule: only a plain 200 that is NOT challenge-marked and passes the
+     * normal store rules may overwrite an entry during revalidation.
+     * Pure + tested (Phase9PolicyTest).
+     */
+    fun revalidateStoreAllowed(
+        statusCode: Int,
+        responseHeaders: Map<String, List<String>>
+    ): Boolean =
+        statusCode == 200 &&
+            !isChallengeResponse(statusCode, responseHeaders) &&
+            shouldStoreResponse(statusCode, responseHeaders)
+
+    /**
      * Phase 7 item 2 — the ONLY size rule for saved data. TRUE => a new
      * store of [incomingBytes] fits under [capBytes] given [currentBytes]
      * already saved. FALSE => refuse the NEW store. Existing entries are

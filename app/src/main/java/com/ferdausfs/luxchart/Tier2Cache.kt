@@ -1121,8 +1121,12 @@ class Tier2Cache(
                     val headers = conn.headerFields.filterKeys { it != null }
                         .mapKeys { it.key as String }
                     val body = readCapped(conn.inputStream, maxSingleResponseBytes)
+                    // Phase 9 F2: the revalidation store decision also refuses
+                    // challenge-MARKED 200s (cf-mitigated / cf-chl-* headers) —
+                    // the immediate-fetch path already did; this path must not
+                    // persist a challenge body over a good entry.
                     if (body.size <= maxSingleResponseBytes &&
-                        Policy.shouldStoreResponse(200, headers)
+                        Policy.revalidateStoreAllowed(200, headers)
                     ) {
                         if (storeToDisk(key, url, 200, headers, body)) {
                             diagnostics.revalidations.incrementAndGet()
