@@ -16,7 +16,11 @@
     font-family: -apple-system, 'Segoe UI', Roboto, sans-serif;
     display: flex; align-items: center; justify-content: center;
   }
-  .card { text-align: center; padding: 36px 28px; max-width: 440px; width: 92%; }
+  .card { text-align: center; padding: 36px 28px; max-width: 440px; width: 92%;
+    /* Phase 9 U2: premium entrance — fade + scale-in on load (overlay-safe:
+       opacity/transform only, no layout shift). Instant when the system
+       requests reduced motion (see the media query at the bottom). */
+    animation: card-in 240ms ease-out both; }
   .orb {
     width: 96px; height: 96px; margin: 0 auto 22px; border-radius: 28px;
     background: linear-gradient(145deg, #0f2d33, #0a0e14);
@@ -49,6 +53,7 @@
   button.secondary:active { transform: scale(.97); box-shadow: none; }
   button.secondary:hover { filter: none; color: var(--text); }
   @keyframes float { 0%, 100% { transform: translateY(0) } 50% { transform: translateY(-8px) } }
+  @keyframes card-in { from { opacity: 0; transform: scale(.96) } to { opacity: 1; transform: scale(1) } }
   @keyframes pulse { 0%, 100% { opacity: .55 } 50% { opacity: 1 } }
   .dots {
     margin-top: 26px; font-size: 11px; color: var(--dim);
@@ -56,6 +61,7 @@
   }
   @media (prefers-reduced-motion: reduce) {
     .orb { animation: none; }
+    .card { animation: none; }
     .dots { animation: none; }
     button { transition: none; }
   }
