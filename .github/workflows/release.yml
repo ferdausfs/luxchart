@@ -3,6 +3,11 @@ name: Release Build
 on:
   push:
     branches: [ main ]
+    # Phase 9 F19: markdown-only commits (AGENT_LOG.md, README.md) no longer
+    # burn a full signed build. workflow_dispatch is unaffected — a manual
+    # run always builds, and versionCode (the run number) stays monotonic.
+    paths-ignore:
+      - '**.md'
   workflow_dispatch:
 
 permissions:
