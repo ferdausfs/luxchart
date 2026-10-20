@@ -992,7 +992,11 @@ class Tier2Cache(
             // online cache-first and offline serving alike.
             diagnostics.bytesServed.addAndGet(bytes.size.toLong())
             val status = meta.optInt("status", 200)
-            val contentType = meta.optString("content-type", null)
+            // Phase 9 F8: the old optString("content-type", null) was
+            // runtime-correct but a Kotlin platform-type warning; the has()
+            // guard keeps identical behaviour (value or null) with types the
+            // compiler is happy about.
+            val contentType = meta.takeIf { it.has("content-type") }?.optString("content-type")
             val savedAtMs = meta.optLong("saved-at", 0L)
             val mime = contentType?.substringBefore(';')?.trim()?.ifEmpty { null }
             val charset = contentType
