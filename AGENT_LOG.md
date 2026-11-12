@@ -8,6 +8,58 @@ files, commit hash, pending items, notes for next agent.
 SECURITY: never record tokens, passwords, keystore contents, base64 blobs, or
 secret values in this file. Secret *names* and file *names* are allowed.
 
+## Phase 10 — 2026-11-12 — ECC agent/skill setup + 3-finding fix pass (versionName 1.9.2)
+
+- **Agent/Tool:** GLM-5.3-Flash (OpenCode on the owner's phone), guided by the
+  freshly installed ECC agent/skill library (owner-provided
+  `ECC-claude-setup-backup-2026-11-06.zip`).
+- **Feature:** two parts. (1) The ECC setup was installed into the repo so every
+  future agent session works with the same agents/skills: `.claude/agents/`
+  (kotlin-reviewer, kotlin-build-resolver, security-reviewer,
+  silent-failure-hunter, performance-optimizer, code-simplifier, code-explorer,
+  tdd-guide, bengali-reviewer), `.claude/skills/` (android-clean-architecture,
+  kotlin-patterns, kotlin-coroutines-flows, kotlin-testing, coding-standards,
+  codebase-onboarding, tdd-workflow, verification-loop, change-impact,
+  security-review), `.claude/commands/` (/kotlin-review /kotlin-build
+  /kotlin-test /gradle-build /code-review /build-fix) and `CLAUDE.md` +
+  `AGENTS.md` capturing the repo's working agreements. Markdown-only commit —
+  intentionally no CI build (Phase 9 F19 paths-ignore). (2) A read-only audit of
+  all three source files at `03e121a` through the kotlin-reviewer /
+  silent-failure-hunter / performance-optimizer lens produced three real,
+  owner-independent findings, each fixed in its own commit.
+- **What changed (one commit per finding):**
+  - SETUP (1e765f0): agent/skill install + CLAUDE.md/AGENTS.md (above).
+  - F1 (e46ec9f): Activity-owned background executors were never shut down —
+    `blobIoExecutor` (holds the Activity) and `Tier2Cache`'s refresh/shell pools
+    kept threads (and the Activity) reachable after `onDestroy`. Fixed via
+    `blobIoExecutor.shutdownNow()` + new `Tier2Cache.shutdown()`; both
+    interrupt-and-discard, which is correct for already-best-effort work. Also
+    bumps versionName 1.9.1 -> 1.9.2.
+  - F2 (0f8d082): `showDiagnosticsDialog()` built its dialog body ON the main
+    thread — `diagnosticsSummary()` lists and JSON-parses every stored-shell
+    meta file (real disk I/O with a large cache; reachable from the banner
+    long-press AND the Volume-Down ×3 gesture while online). The text is now
+    built on a `luxchart-diagnostics` worker thread and the dialog is shown on
+    the main thread when ready (skipped if the Activity is gone).
+  - F3 (0f66ba0): `onCreate` claimed the offline cache mode is applied BEFORE
+    the first load, but `reevaluateOnlineState()` ran AFTER
+    `webView.loadUrl(...)` had already been called. The call now precedes the
+    load decision; the offline main-frame shell path and all pure rules are
+    unchanged (main-frame serving is driven by the `isOnline` flag, not
+    cacheMode, so this is a subresource-timing + comment-honesty fix).
+- **Deliberately NOT changed:** `totalBytesLocked()` full-directory walk per
+  store (accepted design; report-only), JS-bridge top-frame origin check
+  (documented Phase 8 G4 limitation), webkit 1.12.1 pin, applicationId,
+  keystore/secrets, allow-list, no-auto-deletion contract — all untouched and
+  re-verified, not assumed.
+- **Evidence:** JVM unit tests unchanged in scope (pure `Policy.kt` untouched);
+  CI runs #82 (e46ec9f), #83 (0f8d082), #84 (0f66ba0) on GitHub Actions.
+- **Touched files:** MainActivity.kt, Tier2Cache.kt, app/build.gradle.kts,
+  AGENT_LOG.md, README.md, .claude/**, CLAUDE.md, AGENTS.md.
+- **Pending items for the next agent:** none from this pass. Ideas parked:
+  incremental saved-data byte counter (avoid per-store directory walk), and a
+  device smoke-test of the F2/F3 flows on the next manual install.
+
 ## Phase 9 — 2026-10-20 — Zero-bug audit (F1-F22) + UI polish U1-U4 (versionName 1.9.1)
 
 - **Agent/Tool:** GLM (Super Z CLI) acting as senior Android engineer
