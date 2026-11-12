@@ -63,6 +63,10 @@ secret values in this file. Secret *names* and file *names* are allowed.
   GREEN (tests + lintRelease + signed assembleRelease + apksigner). Lesson
   recorded: every version bump must update the Phase 6 pin in the same
   commit. Release artifact: LuxChart-release-apk-85, versionName 1.9.2.
+- **Release published (same session):** GitHub Release `v1.9.2` — tag at
+  bc80c71, asset `LuxChart-v1.9.2.apk` (198,634 B, CI run #85 output,
+  sha256 be306cf0e541a2085640502a7346cc386f378c0981b8d3e7c9d79f42d24a9b93),
+  notes include the three fixes and the untouched-by-design list.
 - **Pending items for the next agent:** none from this pass. Ideas parked:
   incremental saved-data byte counter (avoid per-store directory walk), and a
   device smoke-test of the F2/F3 flows on the next manual install.
