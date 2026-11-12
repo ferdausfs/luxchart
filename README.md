@@ -131,14 +131,14 @@ issues.
 
 **Phase 10 (v1.9.2) — behavior changes worth knowing:**
 - **Executors stop with the app (F1):** the blob/data-save worker and the
-  Tier-2 refresh/shell pools are shut down in  — no orphan
+  Tier-2 refresh/shell pools are shut down in `onDestroy` — no orphan
   threads keeping the old Activity alive.
 - **Diagnostics dialog opens smoothly on big caches (F2):** the dialog text
   (incl. the stored-shell listing) is built on a background thread; the
   dialog appears a moment later instead of stalling the touch thread.
 - **Offline cold start applies the saved-data cache mode before the first
   navigation (F3):** airplane-mode launches now truly begin with
-  , as documented.
+  `LOAD_CACHE_ELSE_NETWORK`, as documented.
 
 **Phase 9 (v1.9.1) — behavior changes worth knowing:**
 - **Background revalidation refuses challenge-marked 200s (F2):** a 200
