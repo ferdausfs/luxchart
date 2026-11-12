@@ -56,6 +56,13 @@ secret values in this file. Secret *names* and file *names* are allowed.
   CI runs #82 (e46ec9f), #83 (0f8d082), #84 (0f66ba0) on GitHub Actions.
 - **Touched files:** MainActivity.kt, Tier2Cache.kt, app/build.gradle.kts,
   AGENT_LOG.md, README.md, .claude/**, CLAUDE.md, AGENTS.md.
+- **Addendum (same session):** CI runs #82/#83/#84 (e46ec9f / 0f8d082 /
+  0f66ba0) FAILED in testDebugUnitTest - Phase6PolicyTest still pinned
+  APP_VERSION_NAME to 1.9.1 while F1 had bumped it to 1.9.2. Fixed in
+  347cc65 (pin -> 1.9.2, no behaviour change); CI run #85 at 347cc65 is
+  GREEN (tests + lintRelease + signed assembleRelease + apksigner). Lesson
+  recorded: every version bump must update the Phase 6 pin in the same
+  commit. Release artifact: LuxChart-release-apk-85, versionName 1.9.2.
 - **Pending items for the next agent:** none from this pass. Ideas parked:
   incremental saved-data byte counter (avoid per-store directory walk), and a
   device smoke-test of the F2/F3 flows on the next manual install.
