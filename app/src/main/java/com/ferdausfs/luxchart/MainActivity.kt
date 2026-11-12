@@ -588,6 +588,13 @@ class MainActivity : ComponentActivity() {
             (webView.parent as? ViewGroup)?.removeView(webView)
             webView.destroy()
         }
+        // Phase 10 F1: the background executors belong to this Activity —
+        // after destroy() their pending work (blob/data saves, Tier-2
+        // refreshes, shell shadow fetches) has no owner and would keep the
+        // Activity reachable. Interrupt-and-discard is correct here: every
+        // task is already best-effort and never user-blocking.
+        runCatching { blobIoExecutor.shutdownNow() }
+        runCatching { tier2Cache?.shutdown() }
         super.onDestroy()
     }
 

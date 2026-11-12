@@ -1270,6 +1270,18 @@ class Tier2Cache(
         lastShellResult = "(cleared saved data)"
     }
 
+    /**
+     * Phase 10 F1: stops the background pools (refresh + shell shadow fetch)
+     * together with the owning Activity. Every pool task is best-effort by
+     * contract, so interrupt-and-discard is correct; an interrupted disk
+     * write can only leave a `.tmp` file behind, which no reader ever scans
+     * and "Clear saved data" removes. Safe to call from any thread, once.
+     */
+    fun shutdown() {
+        runCatching { refreshExecutor.shutdownNow() }
+        runCatching { shellExecutor.shutdownNow() }
+    }
+
     // ---- Main-page shell (Phase 6) ---------------------------------------------
     //
     // Shells live in the SAME directory / lock / 4 GB hard-stop cap as Tier-2
