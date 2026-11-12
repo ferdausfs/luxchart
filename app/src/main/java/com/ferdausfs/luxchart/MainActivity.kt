@@ -1495,26 +1495,47 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** Long-press on the offline banner OR Volume-Down ×3 (2 s): diagnostics. */
+    /**
+     * Phase 10 F2: the dialog body may touch DISK (the shell section lists
+     * and parses every stored-shell meta file; a 4 GB cache can hold many).
+     * The summary + request-log snapshot are therefore built on a background
+     * thread; only the DIALOG itself is shown on the main thread once the
+     * text is ready. The gesture/haptic feedback already happened on the
+     * main thread — the dialog simply arrives a moment later.
+     */
     private fun showDiagnosticsDialog() {
-        // Phase 6 item 5: full summary incl. the main-page-shell section.
         val cache = tier2Cache ?: return
-        val summary = cache.diagnosticsSummary()
-        // Phase 7 item 10: the request log — what the site really requests,
-        // sanitized (host+path, query KEY NAMES only; never values, headers,
-        // cookies, tokens or bodies).
-        val logLines = cache.requestLogSnapshot()
-        val logDump = if (logLines.isEmpty()) {
-            "(no luxalgo requests logged yet)"
-        } else {
-            logLines.joinToString("\n") { it.toString() }
-        }
-        val body = buildString {
-            append(summary)
-            append("\nrequest log (last ").append(Tier2Cache.MAX_REQUEST_LOG_ENTRIES)
-                .append(" luxalgo requests, oldest first)\n")
-            append(logDump)
-        }
+        Thread({
+            val body = try {
+                val summary = cache.diagnosticsSummary()
+                // Phase 7 item 10: the request log — what the site really
+                // requests, sanitized (host+path, query KEY NAMES only;
+                // never values, headers, cookies, tokens or bodies).
+                val logLines = cache.requestLogSnapshot()
+                val logDump = if (logLines.isEmpty()) {
+                    "(no luxalgo requests logged yet)"
+                } else {
+                    logLines.joinToString("\n") { it.toString() }
+                }
+                buildString {
+                    append(summary)
+                    append("\nrequest log (last ").append(Tier2Cache.MAX_REQUEST_LOG_ENTRIES)
+                        .append(" luxalgo requests, oldest first)\n")
+                    append(logDump)
+                }
+            } catch (e: Exception) {
+                "(diagnostics unavailable)"
+            }
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                showDiagnosticsBody(body)
+            }
+        }, "luxchart-diagnostics").start()
+    }
+
+    /** Main-thread dialog for the diagnostics text built by [showDiagnosticsDialog]. */
+    private fun showDiagnosticsBody(body: String) {
+        val cache = tier2Cache ?: return
         val view = TextView(this).apply {
             text = body
             textSize = 11f
