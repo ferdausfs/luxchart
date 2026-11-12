@@ -488,6 +488,13 @@ class MainActivity : ComponentActivity() {
             // is provably non-null — the smart cast replaces the old `stored!!`.
             if (stored != null && Policy.restoreAllowed(stored)) currentUrl = stored
         }
+        // Set the offline/online cache mode correctly BEFORE the first load
+        // (Tier-1 offline), so an app started in airplane mode immediately
+        // serves whatever the WebView has saved. Phase 10 F3: the call now
+        // really happens before loadUrl — it used to run AFTER the load had
+        // already started (comment said before, code said after).
+        reevaluateOnlineState()
+
         if (errorShowing) {
             showErrorPage()
         } else {
@@ -495,11 +502,6 @@ class MainActivity : ComponentActivity() {
             // crash recovery all funnel through the same single current URL.
             webView.loadUrl(currentUrl)
         }
-
-        // Set the offline/online cache mode correctly BEFORE the first load
-        // (Tier-1 offline), so an app started in airplane mode immediately
-        // serves whatever the WebView has saved.
-        reevaluateOnlineState()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
